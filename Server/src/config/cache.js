@@ -34,11 +34,6 @@ export async function getCache(key) {
   log('cache_hit', {key});
   return result.value;
 }
-
-/**
- * Store a successful value. Refuses errors, failed query payloads, and oversized values.
- * Returns false when the write is skipped or Redis is unavailable.
- */
 export async function setCache(key, value, ttl) {
   const cacheKey = String(key || '');
   const seconds = Number(ttl);

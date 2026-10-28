@@ -45,12 +45,6 @@ export async function invalidateProductSearchCache() {
   );
   return true;
 }
-
-/**
- * Cache-aside for a successful product search.
- * `load` runs against MongoDB on a miss or when Redis is unavailable.
- * Thrown loader errors are not cached.
- */
 export async function rememberProductSearch(namespace, identity, load, accept) {
   const version = await readProductSearchVersion();
   if (version == null) return load();
