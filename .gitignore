@@ -1,0 +1,75 @@
+# =========================
+# WooWooErp — root ignore
+# Never push secrets, deps, or build output to GitHub
+# =========================
+
+# ---- Secrets / env (keep *.example committed) ----
+.env
+.env.*
+!.env.example
+!.env*.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env*.example
+
+# Common secret filenames
+*.pem
+*.p12
+*.key
+*credentials*.json
+*serviceAccount*.json
+secrets/
+.secrets/
+
+# ---- Dependencies ----
+node_modules/
+**/node_modules/
+
+# ---- Build / cache ----
+dist/
+dist-ssr/
+build/
+out/
+.next/
+.nuxt/
+.vite/
+.turbo/
+.cache/
+coverage/
+*.tsbuildinfo
+
+# ---- Logs ----
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ---- Uploads / local data ----
+Server/uploads/
+**/uploads/*
+!**/uploads/.gitkeep
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.local
+
+# ---- Misc ----
+*.bak
+*.tmp
+*.temp
+.temp/
+tmp/

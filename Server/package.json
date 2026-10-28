@@ -1,0 +1,40 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "This is art house backend.",
+  "main": "src/server.js",
+  "author": "Art_House",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "worker:announcement": "node src/workers/announcement.worker.js",
+    "seed:rbac": "node scripts/seedRbac.js"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.40.0",
+    "bcryptjs": "^3.0.3",
+    "bullmq": "^6.0.2",
+    "cloudinary": "^2.10.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-mongo-sanitize": "^2.2.0",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.3.0",
+    "ioredis": "^5.11.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongodb": "^7.0.0",
+    "mongoose": "^8.20.1",
+    "multer": "^2.1.1",
+    "nodemailer": "^8.0.7",
+    "nodemon": "^3.1.11",
+    "razorpay": "^2.9.8",
+    "twilio": "^5.10.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2"
+  }
+}
