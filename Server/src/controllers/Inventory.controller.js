@@ -2,6 +2,7 @@ import Purchase from "../models/purchase.model.js";
 import Invoice from "../models/invoice.model.js";
 import ReturnSale from "../models/returnSale.model.js";
 import PurchaseReturn from "../models/purchaseReturn.model.js";
+import { foldStockDocuments } from "../utils/inventoryStock.utils.js";
 
 const toNumber = (value) => {
   const num = Number(value);
@@ -10,7 +11,8 @@ const toNumber = (value) => {
 
 const normalizeProductName = (value) => String(value ?? "").trim();
 
-const includeByStatus = (status) => String(status ?? "").toLowerCase() !== "cancelled";
+const includeByStatus = (status) =>
+  String(status ?? "").trim().toLowerCase() !== "cancelled";
 
 const bumpMovement = (map, item, movementType, docCreatedAt) => {
   const name = normalizeProductName(item?.productName);
@@ -27,11 +29,6 @@ const bumpMovement = (map, item, movementType, docCreatedAt) => {
     sale_price: 0,
     last_updated: null,
   };
-
-  if (movementType === "purchase") current.qty += qty;
-  if (movementType === "invoice") current.qty -= qty;
-  if (movementType === "sales_return") current.qty += qty;
-  if (movementType === "purchase_return") current.qty -= qty;
 
   if (movementType === "purchase" || movementType === "purchase_return") {
     current.purchase_price = unitPrice;
@@ -66,7 +63,7 @@ export const getInventories = async (req, res) => {
       ).lean(),
       ReturnSale.find(
         { status: { $ne: "cancelled" } },
-        { items: 1, createdAt: 1, status: 1 },
+        { items: 1, createdAt: 1, status: 1, originalInvoiceId: 1 },
       ).lean(),
       PurchaseReturn.find(
         { status: { $ne: "cancelled" } },
@@ -104,11 +101,22 @@ export const getInventories = async (req, res) => {
       }
     }
 
+    const qtyByKey = foldStockDocuments({
+      purchases,
+      invoices,
+      returnSales,
+      purchaseReturns,
+    });
+    const stockQtyFor = (name) => {
+      const key = normalizeProductName(name).toLowerCase();
+      return Math.max(0, toNumber(qtyByKey.get(key)));
+    };
+
     const inventories = Array.from(stockMap.values())
       .map((entry, index) => ({
         id: index + 1,
         item: entry.item,
-        qty: toNumber(entry.qty),
+        qty: stockQtyFor(entry.item),
         purchase_price: `₹ ${toNumber(entry.purchase_price).toFixed(2)}`,
         sale_price: `₹ ${toNumber(entry.sale_price).toFixed(2)}`,
         last_updated: entry.last_updated

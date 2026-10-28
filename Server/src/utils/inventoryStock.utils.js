@@ -52,11 +52,24 @@ export const getStockQtyForName = (stockMap, name) => {
   return 0;
 };
 
+/** Stock shown to clients never goes below zero. */
+export const nonNegativeQty = (value) => Math.max(0, safeQty(value));
+
 export const sumStockForNames = (stockMap, names = []) =>
-  names.reduce((sum, name) => sum + getStockQtyForName(stockMap, name), 0);
+  nonNegativeQty(
+    names.reduce((sum, name) => sum + getStockQtyForName(stockMap, name), 0),
+  );
+
+export const availableStockForName = (stockMap, name) =>
+  nonNegativeQty(getStockQtyForName(stockMap, name));
+
+const countsTowardStock = (status) =>
+  String(status ?? "").trim().toLowerCase() !== "cancelled";
 
 const movementDocsQuery = (names) => {
-  const base = { status: { $ne: "cancelled" } };
+  const base = {
+    status: { $nin: ["cancelled", "Cancelled", "canceled", "Canceled"] },
+  };
   if (!Array.isArray(names) || names.length === 0) return base;
 
   // Case-insensitive match so purchase "Shirt - Red" maps to catalogue "Shirt - Red"
@@ -69,6 +82,108 @@ const movementDocsQuery = (names) => {
       },
     })),
   };
+};
+
+/**
+ * Purchases add stock. Purchase returns remove it.
+ * A sale removes only the quantity still sold (qty − already returned).
+ * Cancelling or deleting the invoice drops that deduction, which puts the
+ * quantity back. A return document is not added again when the invoice
+ * already records returnedQty, and it is ignored once that invoice is
+ * cancelled or deleted.
+ */
+export const foldStockDocuments = ({
+  purchases = [],
+  invoices = [],
+  returnSales = [],
+  purchaseReturns = [],
+  includeName = () => true,
+} = {}) => {
+  const qtyByKey = new Map();
+  const invoiceById = new Map();
+
+  for (const invoice of invoices) {
+    if (invoice?._id) invoiceById.set(String(invoice._id), invoice);
+  }
+
+  for (const purchase of purchases) {
+    if (!countsTowardStock(purchase?.status)) continue;
+    for (const item of purchase?.items ?? []) {
+      const name = normalizeName(item?.productName);
+      if (!includeName(name)) continue;
+      addQty(qtyByKey, name, safeQty(item?.qty));
+    }
+  }
+
+  for (const purchaseReturn of purchaseReturns) {
+    if (!countsTowardStock(purchaseReturn?.status)) continue;
+    for (const item of purchaseReturn?.items ?? []) {
+      const name = normalizeName(item?.productName);
+      if (!includeName(name)) continue;
+      addQty(qtyByKey, name, -safeQty(item?.qty));
+    }
+  }
+
+  const linkedReturnQty = new Map();
+  for (const saleReturn of returnSales) {
+    if (!countsTowardStock(saleReturn?.status)) continue;
+    const invoiceId = saleReturn?.originalInvoiceId
+      ? String(saleReturn.originalInvoiceId)
+      : "";
+    if (invoiceId) {
+      const invoice = invoiceById.get(invoiceId);
+      // Cancelled or deleted invoice already restored this quantity.
+      if (!invoice || !countsTowardStock(invoice.status)) continue;
+      for (const item of saleReturn?.items ?? []) {
+        const name = normalizeName(item?.productName);
+        if (!includeName(name)) continue;
+        const key = `${invoiceId}\0${nameKey(name)}`;
+        linkedReturnQty.set(
+          key,
+          (linkedReturnQty.get(key) ?? 0) + safeQty(item?.qty),
+        );
+      }
+      continue;
+    }
+    for (const item of saleReturn?.items ?? []) {
+      const name = normalizeName(item?.productName);
+      if (!includeName(name)) continue;
+      addQty(qtyByKey, name, safeQty(item?.qty));
+    }
+  }
+
+  const usedReturnKeys = new Set();
+  for (const invoice of invoices) {
+    if (!countsTowardStock(invoice?.status)) continue;
+    const invoiceId = String(invoice._id ?? "");
+    const byName = new Map();
+    for (const item of invoice?.items ?? []) {
+      const name = normalizeName(item?.productName);
+      if (!name || !includeName(name)) continue;
+      const key = nameKey(name);
+      const bucket = byName.get(key) ?? { name, qty: 0, returned: 0 };
+      bucket.qty += safeQty(item?.qty);
+      bucket.returned += safeQty(item?.returnedQty);
+      byName.set(key, bucket);
+    }
+    for (const [key, bucket] of byName) {
+      const linkKey = `${invoiceId}\0${key}`;
+      const linked = linkedReturnQty.get(linkKey) ?? 0;
+      if (linkedReturnQty.has(linkKey)) usedReturnKeys.add(linkKey);
+      const restored = Math.max(bucket.returned, linked);
+      const stillSold = Math.max(0, bucket.qty - restored);
+      addQty(qtyByKey, bucket.name, -stillSold);
+    }
+  }
+
+  for (const [key, qty] of linkedReturnQty) {
+    if (usedReturnKeys.has(key) || qty <= 0) continue;
+    const returnedName = key.split("\0")[1];
+    if (!returnedName) continue;
+    addQty(qtyByKey, returnedName, qty);
+  }
+
+  return qtyByKey;
 };
 
 /**
@@ -92,51 +207,25 @@ export const computeStockByProductNames = async ({
   }
 
   const [purchases, invoices, returnSales, purchaseReturns] = await Promise.all([
-    Purchase.find(query, { items: 1 }).lean(),
-    Invoice.find(invoiceQuery, { items: 1 }).lean(),
-    ReturnSale.find(query, { items: 1 }).lean(),
-    PurchaseReturn.find(query, { items: 1 }).lean(),
+    Purchase.find(query, { items: 1, status: 1 }).lean(),
+    Invoice.find(invoiceQuery, { items: 1, status: 1 }).lean(),
+    ReturnSale.find(query, { items: 1, status: 1, originalInvoiceId: 1 }).lean(),
+    PurchaseReturn.find(query, { items: 1, status: 1 }).lean(),
   ]);
 
-  const qtyByKey = new Map();
   const requestedKeys = new Set(normalizedNames.map(nameKey));
-
   const shouldInclude = (name) => {
     if (!requestedKeys.size) return Boolean(nameKey(name));
     return requestedKeys.has(nameKey(name));
   };
 
-  for (const doc of purchases) {
-    for (const item of doc?.items ?? []) {
-      const name = normalizeName(item?.productName);
-      if (!shouldInclude(name)) continue;
-      addQty(qtyByKey, name, safeQty(item?.qty));
-    }
-  }
-
-  for (const doc of invoices) {
-    for (const item of doc?.items ?? []) {
-      const name = normalizeName(item?.productName);
-      if (!shouldInclude(name)) continue;
-      addQty(qtyByKey, name, -safeQty(item?.qty));
-    }
-  }
-
-  for (const doc of returnSales) {
-    for (const item of doc?.items ?? []) {
-      const name = normalizeName(item?.productName);
-      if (!shouldInclude(name)) continue;
-      addQty(qtyByKey, name, safeQty(item?.qty));
-    }
-  }
-
-  for (const doc of purchaseReturns) {
-    for (const item of doc?.items ?? []) {
-      const name = normalizeName(item?.productName);
-      if (!shouldInclude(name)) continue;
-      addQty(qtyByKey, name, -safeQty(item?.qty));
-    }
-  }
+  const qtyByKey = foldStockDocuments({
+    purchases,
+    invoices,
+    returnSales,
+    purchaseReturns,
+    includeName: shouldInclude,
+  });
 
   // Expose both lowercase keys and original requested display names for callers
   const stockMap = new Map(qtyByKey);

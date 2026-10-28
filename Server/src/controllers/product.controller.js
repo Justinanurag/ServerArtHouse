@@ -1025,11 +1025,6 @@ const ALLOWED_PRODUCT_SORT = new Set([
   'category',
   'stockQty',
 ]);
-
-/**
- * Paginated product list with server-side search/sort.
- * Query: page, limit|size, skip|start, search, type, sortBy, sortDir, includeStats
- */
 export const getProducts = async (req, res) => {
   try {
     const {
@@ -1047,14 +1042,10 @@ export const getProducts = async (req, res) => {
     } = req.query;
 
     const clauses = [];
-
-    // Filter by CSP enrollment ID (shows all products for a CSP owner)
     const cspEnrollmentIdFilter = String(cspEnrollmentIdRaw || '').trim();
     if (cspEnrollmentIdFilter && mongoose.Types.ObjectId.isValid(cspEnrollmentIdFilter)) {
       clauses.push({ cspEnrollmentId: new mongoose.Types.ObjectId(cspEnrollmentIdFilter) });
     }
-
-    // Optional type filter: product | service (omit = all)
     const typeFilter = String(type || '').trim().toLowerCase();
     if (typeFilter === 'product' || typeFilter === 'service') {
       clauses.push({
@@ -1175,19 +1166,24 @@ export const getProducts = async (req, res) => {
     ];
     const stockMap = await computeStockByProductNames({ names: productNames });
 
-    const productsWithLiveStock = products.map((product) => {
-      const isService =
-        product.itemType === 'service' || product.type === 'service';
-      const liveStockQty = isService
-        ? 0
-        : sumStockForNames(stockMap, getProductStockNames(product));
+ const productsWithLiveStock = products.map((product) => {
+  const isService =
+    product.itemType === "service" ||
+    product.type === "service";
 
-      return {
-        ...product,
-        stockQty: liveStockQty,
-        stockStatus: liveStockQty > 0 ? 'in_stock' : 'out_of_stock',
-      };
-    });
+  const stockNames = getProductStockNames(product);
+
+  const liveStockQty = isService
+    ? 0
+    : sumStockForNames(stockMap, stockNames);
+
+  return {
+    ...product,
+    stockQty: liveStockQty,
+    stockStatus:
+      liveStockQty > 0 ? "in_stock" : "out_of_stock",
+  };
+});
 
     const productsWithCsp = await withCspLabel(productsWithLiveStock);
     const totalPages = total === 0 ? 0 : Math.ceil(total / limit);

@@ -112,9 +112,11 @@ const expandProductCatalogueRows = (product, searchRegex, stockByName) => {
   const stockFor = (lineName) => {
     if (!stockByName) return 0;
     const exact = stockByName.get(lineName);
-    if (exact != null) return Number(exact) || 0;
-    const lower = stockByName.get(String(lineName).toLowerCase());
-    return Number(lower) || 0;
+    const raw =
+      exact != null
+        ? Number(exact)
+        : Number(stockByName.get(String(lineName).toLowerCase()));
+    return Math.max(0, Number.isFinite(raw) ? raw : 0);
   };
 
   const base = {

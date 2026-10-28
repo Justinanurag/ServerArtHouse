@@ -9,7 +9,7 @@ import {
   settleCspPaymentSplit,
   reverseCspPaymentSplit,
 } from '../services/cspPaymentSplit.service.js';
-import { computeStockByProductNames } from '../utils/inventoryStock.utils.js';
+import { availableStockForName, computeStockByProductNames } from '../utils/inventoryStock.utils.js';
 import {
   appendTransaction,
   debitWalletForPurchase,
@@ -84,7 +84,7 @@ const assertSufficientPurchaseStock = async ({
   }
 
   for (const [name, requestedQty] of requestedQtyMap.entries()) {
-    const availableQty = Number(stockMap.get(name) ?? 0);
+    const availableQty = availableStockForName(stockMap, name);
     if (requestedQty > availableQty) {
       return {
         success: false,
