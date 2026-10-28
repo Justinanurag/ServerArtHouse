@@ -10,13 +10,14 @@ if (!cached) {
   };
 }
 
-const connectDB = async () => {
-  // Reuse existing connection
+const connectDB = async (attempt = 0) => {
+  // Reuse an open connection across warm serverless invocations.
   if (cached.conn && mongoose.connection.readyState === 1) {
     return cached.conn;
   }
 
-  // Reuse existing connection promise if connection is in progress
+  // Share one in-flight connect so concurrent requests do not open
+  // multiple clients. Assign the promise before awaiting it.
   if (!cached.promise) {
     const opts = {
       bufferCommands: false,
@@ -41,11 +42,23 @@ const connectDB = async () => {
       .catch((error) => {
         // Allow a future request to retry the connection
         cached.promise = null;
+        cached.conn = null;
         throw error;
       });
   }
 
   cached.conn = await cached.promise;
+
+  // A cached promise can resolve after the socket has already dropped.
+  // Drop it and open a fresh connection instead of querying a dead client.
+  if (mongoose.connection.readyState !== 1) {
+    cached.promise = null;
+    cached.conn = null;
+    if (attempt >= 1) {
+      throw new Error("MongoDB connection was not ready after connect()");
+    }
+    return connectDB(attempt + 1);
+  }
 
   return cached.conn;
 };

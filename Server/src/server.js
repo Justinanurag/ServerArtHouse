@@ -95,6 +95,21 @@ app.use((req, _res, next) => {
   next();
 });
 
+// bufferCommands is false, so queries throw until mongoose.connect() resolves.
+// On a cold start connectDB() is still in flight when the first requests arrive.
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    console.error('MongoDB connection error:', error);
+    return res.status(503).json({
+      success: false,
+      message: 'Database connection is not ready. Please retry.',
+    });
+  }
+});
+
 // Admin / existing ERP APIs 
 app.use('/auth', authRoutes);
 app.use('/invoice', invoiceRoutes);
@@ -150,7 +165,10 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 //Exhibition module
 app.use('/api/exhibition',exhibitionRoutes);
 
-connectDB();
+// Start connecting during cold start. Route handlers still await the same promise.
+connectDB().catch((error) => {
+  console.error('Initial MongoDB connection failed:', error.message);
+});
 
 
 app.get('/', (req, res) => {
