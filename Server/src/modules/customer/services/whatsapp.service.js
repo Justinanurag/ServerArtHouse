@@ -1160,9 +1160,7 @@ export const sendActivityUpdateWhatsApp = async ({
   const detailsParam = String(
     detailsUrlParam ?? config.detailsUrlParam ?? '',
   ).trim();
-  const walletParam = String(
-    walletUrlParam ?? config.walletUrlParam ?? '',
-  ).trim();
+  void walletUrlParam;
 
   // Final safety: never deliver Amount Paid ₹0 with Discount = bill total
   let paidSend = Number(amountPaid);

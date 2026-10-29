@@ -329,9 +329,9 @@ const notifyActivityUpdateWhatsApp = async ({
       Math.round((Number(walletBalance) + Number.EPSILON) * 100) / 100,
     );
 
-    const detailsUrlParam = String(
-      process.env.WHATSAPP_ACTIVITY_DETAILS_URL_PARAM || invoice.invoiceCode || '',
-    ).trim();
+   // WhatsApp "Download Invoice" is a dynamic URL ending in /activities/{{1}}.
+    // {{1}} must be this bill's id so the link opens that customer's invoice.
+    const detailsUrlParam = String(invoice?._id || '').trim();
 
     const membershipLabel = membershipLabelForCustomer(
       { membershipType },
