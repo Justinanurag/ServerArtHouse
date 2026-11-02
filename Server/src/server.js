@@ -69,23 +69,10 @@ app.use(
     crossOriginResourcePolicy: {policy: 'cross-origin'},
   }),
 );
-const allowedOrigins = [
-  "https://woo-woo-erp-5iyu.vercel.app",
-  "http://localhost:5173",
-];
 app.use(
   cors({
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
+    origin: true,
     credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    optionsSuccessStatus: 204,
   }),
 );
 app.use(cookieParser());
@@ -154,7 +141,9 @@ app.use('/hap', hapRouters);
 app.use('/api/customer', customerAuthRoutes);
 //send whatsapp announcement
 app.use('/api/announcement', sentAnnouncement);
+
 //Expences module
+
 app.use('/api/expences', expenceRoutes);
 app.use('/api/expences/category', expenceCategoryRoutes);
 app.use('/dashboard', dashboardRoutes);
@@ -166,30 +155,14 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 //Exhibition module
 app.use('/api/exhibition',exhibitionRoutes);
 
-app.get("/", (req, res) => {
-  res.send("🚀 Server is live and running...");
+connectDB();
+
+app.get('/', (req, res) => {
+  res.send('🚀 Server is live and running...');
 });
 
 app.use(customerErrorHandler);
 
-// Start the server only after MongoDB connects
-const startServer = async () => {
-  try {
-    await connectDB();
-
-    console.log("✅ MongoDB connection is ready");
-
-    app.listen(PORT, () => {
-      console.log(`🌐 Server is running on port ${PORT}`);
-
-      checkRedisConnection().catch((error) => {
-        console.error("Redis connection error:", error);
-      });
-    });
-  } catch (error) {
-    console.error("❌ Failed to initialize the server:", error);
-    process.exit(1);
-  }
-};
-
-startServer();
+app.listen(PORT, () => {
+  console.log(`🌐 Server is running on port ${PORT}`);
+});
