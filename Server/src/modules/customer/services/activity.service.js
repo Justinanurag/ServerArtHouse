@@ -294,6 +294,35 @@ export async function getCustomerActivityDetail(
   return mapActivityDetail(inv);
 }
 
+/**
+ * Bill opened from the WhatsApp Download Invoice link.
+ * The invoice id is the access key. Drafts stay private.
+ */
+export async function getPublicInvoice(invoiceId) {
+  if (!mongoose.Types.ObjectId.isValid(String(invoiceId || ''))) return null;
+
+  const inv = await Invoice.findOne({
+    _id: invoiceId,
+    status: {$ne: 'draft'},
+  })
+    .select(`${activitySelectFields} customerName membershipType`)
+    .lean();
+
+  if (!inv) return null;
+
+  const detail = mapActivityDetail(inv);
+  if (detail.billedBy) {
+    detail.billedBy = {staffName: detail.billedBy.staffName || ''};
+  }
+
+  return {
+    ...detail,
+    customerName: String(inv.customerName || '').trim(),
+    customerPhone: String(inv.customerPhone || '').trim(),
+    membershipType: String(inv.membershipType || '').trim(),
+  };
+}
+
 export async function getCustomerActivityInsights(
   customerId,
   {customerMobile} = {},

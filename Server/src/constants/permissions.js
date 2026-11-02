@@ -301,6 +301,7 @@ export const MENU_PERMISSION_MAP = Object.freeze({
   '/customers': PERMISSIONS.CUSTOMER_READ,
   // CSP: dedicated perm OR customer network access (so menu shows for existing staff)
   '/csp': [PERMISSIONS.CSP_READ, PERMISSIONS.CUSTOMER_READ],
+  '/hap': [PERMISSIONS.AFFILIATE_READ, PERMISSIONS.CUSTOMER_READ, PERMISSIONS.CSP_READ],
   '/vendors': PERMISSIONS.VENDOR_READ,
   '/Vendor list': PERMISSIONS.VENDOR_READ,
   '/partners': PERMISSIONS.PARTNER_READ,

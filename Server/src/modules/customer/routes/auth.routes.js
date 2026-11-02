@@ -43,6 +43,12 @@ import {
   getMyCspApplication,
 } from '../../../controllers/cspApplication.controller.js';
 import {
+  applyHap,
+  deleteMyHapApplication,
+  getMyHapApplication,
+  updateMyHapApplication,
+} from '../../../controllers/hapApplication.controller.js';
+import {
   createMyCspProduct,
   deleteMyCspProduct,
   listMyCspProducts,
@@ -132,6 +138,30 @@ router.post(
   authenticateCustomer,
   authorizeCustomer('active'),
   applyCsp,
+);
+router.get(
+  '/hap/application',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  getMyHapApplication,
+);
+router.post(
+  '/hap/apply',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  applyHap,
+);
+router.patch(
+  '/hap/application',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  updateMyHapApplication,
+);
+router.delete(
+  '/hap/application',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  deleteMyHapApplication,
 );
 router.get(
   '/csp/products',

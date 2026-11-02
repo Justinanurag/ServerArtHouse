@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 import SpaceBooking from '../models/spaceBooking.model.js';
 import AllBooking from '../models/allBooking.model.js';
+import Customer from '../models/customer.model.js';
+import Wallet from '../models/wallet.model.js';
+import {appendTransaction} from './wallet.controller.js';
+import {persistableBucketFields, resolveTwoBuckets} from '../utils/walletBuckets.js';
 import {
   getBookingPaymentRule,
   saveBookingPaymentRule,
@@ -318,6 +322,66 @@ export const cancelOverviewBooking = async (req, res) => {
   }
 };
 
+const isWalletMethod = method => String(method || '').trim().toLowerCase() === 'wallet';
+
+const findRefundCustomer = async doc => {
+  const customerId = doc?.customerId;
+  if (customerId && mongoose.Types.ObjectId.isValid(String(customerId))) {
+    const byId = await Customer.findById(customerId);
+    if (byId) return byId;
+  }
+  const phone = String(doc?.customerPhone || '').trim();
+  const digits = phone.replace(/\D/g, '');
+  const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+  if (!phone && !last10) return null;
+  const phones = [...new Set([phone, digits, last10, last10 ? `+91${last10}` : '', last10 ? `91${last10}` : ''].filter(Boolean))];
+  return Customer.findOne({
+    $or: phones.flatMap(value => [{mobile: value}, {whatsappNumber: value}]),
+  });
+};
+
+/** Credit a completed wallet refund once per booking. */
+const creditBookingRefundToWallet = async (doc, amount, note, actor) => {
+  const customer = await findRefundCustomer(doc);
+  if (!customer) {
+    const error = new Error('Customer not found for this wallet refund.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const seed = resolveTwoBuckets(null, customer);
+  let wallet = await Wallet.findOne({customerId: customer._id});
+  if (!wallet) {
+    wallet = await Wallet.create({
+      customerId: customer._id,
+      customerName: String(customer.name || doc.customerName || '').trim(),
+      customerPhone: String(customer.mobile || doc.customerPhone || '').trim(),
+      ...persistableBucketFields(seed),
+      transactions: [],
+    });
+  }
+
+  const referenceId = String(doc._id);
+  const alreadyCredited = (wallet.transactions || []).some(
+    tx =>
+      String(tx.referenceId || '') === referenceId &&
+      String(tx.referenceType || '') === 'booking-refund' &&
+      String(tx.type || '').toLowerCase() === 'credit',
+  );
+  if (alreadyCredited) return;
+
+  const bookingCode = doc.bookingCode || doc.invoiceCode || referenceId.slice(-6);
+  await appendTransaction(wallet, {
+    type: 'credit',
+    amount,
+    note: note || `Booking refund ${bookingCode}`,
+    referenceType: 'booking-refund',
+    referenceId,
+    walletType: 'nonWithdrawable',
+    createdBy: actor,
+  });
+};
+
 export const updateOverviewRefund = async (req, res) => {
   try {
     const kind = String(req.params.kind || '').trim();
@@ -366,6 +430,17 @@ export const updateOverviewRefund = async (req, res) => {
     const note = String(req.body?.note || '').trim();
     const actor = actorFrom(req);
     const now = new Date();
+
+    if (isWalletMethod(method) && status !== 'Failed') {
+      try {
+        await creditBookingRefundToWallet(loaded.doc, amount, note, actor);
+      } catch (error) {
+        return res.status(error.statusCode || 400).json({
+          success: false,
+          message: error.message || 'Could not add the refund to the wallet.',
+        });
+      }
+    }
 
     const updated = await modelFor(kind).findOneAndUpdate(
       {

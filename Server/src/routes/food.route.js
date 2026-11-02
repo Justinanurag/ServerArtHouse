@@ -9,11 +9,22 @@ import {
   updateFood,
   deleteFood,
   uploadFoodImage,
+  listFoodOffers,
+  createFoodOffer,
+  deleteFoodOffer,
 } from '../controllers/food.controller.js';
 
 const router = express.Router();
 
 router.use(authenticateUser, attachStaffContext);
+
+router.get('/offers', requirePermission(PERMISSIONS.FOOD_READ), listFoodOffers);
+router.post('/offers', requirePermission(PERMISSIONS.FOOD_CREATE), createFoodOffer);
+router.delete(
+  '/offers/:id',
+  requirePermission(PERMISSIONS.FOOD_DELETE),
+  deleteFoodOffer,
+);
 
 router.get('/', requirePermission(PERMISSIONS.FOOD_READ), getFoods);
 router.get('/:id', requirePermission(PERMISSIONS.FOOD_READ), getFoodById);

@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import {fileURLToPath} from 'url';
 import Food from '../models/food.model.js';
+import FoodOffer from '../models/foodOffer.model.js';
 import {uploadOnCloudinary} from '../utils/cloudinary.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -229,5 +230,122 @@ export const deleteFood = async (req, res) => {
   } catch (error) {
     console.error('deleteFood error:', error);
     return res.status(500).json({success: false, message: 'Failed to delete food.'});
+  }
+};
+
+const offerFood = food => ({
+  id: String(food?._id || ''),
+  name: String(food?.name || ''),
+  price: Math.max(0, Number(food?.price ?? 0) || 0),
+  status: food?.status === 'Inactive' ? 'Inactive' : 'Active',
+});
+
+const serializeOffer = offer => {
+  const buy = offer?.buyFoodId && offer.buyFoodId._id ? offer.buyFoodId : null;
+  const free = offer?.freeFoodId && offer.freeFoodId._id ? offer.freeFoodId : null;
+  return {
+    _id: String(offer._id),
+    buyFoodId: String(buy?._id || offer.buyFoodId || ''),
+    freeFoodId: String(free?._id || offer.freeFoodId || ''),
+    buyFood: buy ? offerFood(buy) : null,
+    freeFood: free ? offerFood(free) : null,
+  };
+};
+
+export const listFoodOffers = async (_req, res) => {
+  try {
+    const offers = await FoodOffer.find()
+      .populate('buyFoodId', 'name price status')
+      .populate('freeFoodId', 'name price status')
+      .sort({createdAt: -1});
+    return res.status(200).json({
+      success: true,
+      offers: offers.map(serializeOffer),
+    });
+  } catch (error) {
+    console.error('listFoodOffers error:', error);
+    return res.status(500).json({success: false, message: 'Failed to load food offers.'});
+  }
+};
+
+export const createFoodOffer = async (req, res) => {
+  try {
+    const buyFoodId = String(req.body?.buyFoodId || '').trim();
+    const freeFoodId = String(req.body?.freeFoodId || '').trim();
+    if (
+      !mongoose.Types.ObjectId.isValid(buyFoodId) ||
+      !mongoose.Types.ObjectId.isValid(freeFoodId)
+    ) {
+      return res.status(400).json({success: false, message: 'Select both food items.'});
+    }
+    if (buyFoodId === freeFoodId) {
+      return res.status(400).json({
+        success: false,
+        message: 'The free item must be different from the purchase item.',
+      });
+    }
+
+    const [buyFood, freeFood] = await Promise.all([
+      Food.findById(buyFoodId),
+      Food.findById(freeFoodId),
+    ]);
+    if (!buyFood || !freeFood) {
+      return res.status(404).json({success: false, message: 'Food item not found.'});
+    }
+    if (buyFood.status === 'Inactive' || freeFood.status === 'Inactive') {
+      return res.status(400).json({
+        success: false,
+        message: 'Choose active food items for this offer.',
+      });
+    }
+
+    const existing = await FoodOffer.findOne({buyFoodId});
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: `An offer already exists for ${buyFood.name}. Remove it before saving another.`,
+      });
+    }
+
+    const offer = await FoodOffer.create({
+      buyFoodId,
+      freeFoodId,
+      createdBy: req.body?.createdBy,
+    });
+    const saved = await FoodOffer.findById(offer._id)
+      .populate('buyFoodId', 'name price status')
+      .populate('freeFoodId', 'name price status');
+
+    return res.status(201).json({
+      success: true,
+      message: 'Food offer saved.',
+      offer: serializeOffer(saved),
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'An offer already exists for this purchase item.',
+      });
+    }
+    console.error('createFoodOffer error:', error);
+    return res.status(500).json({success: false, message: 'Failed to save food offer.'});
+  }
+};
+
+export const deleteFoodOffer = async (req, res) => {
+  try {
+    const {id} = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({success: false, message: 'Invalid offer id.'});
+    }
+    const offer = await FoodOffer.findByIdAndDelete(id);
+    if (!offer) {
+      return res.status(404).json({success: false, message: 'Offer not found.'});
+    }
+    return res.status(200).json({success: true, message: 'Food offer removed.'});
+  } catch (error) {
+    console.error('deleteFoodOffer error:', error);
+    return res.status(500).json({success: false, message: 'Failed to remove food offer.'});
   }
 };

@@ -9,7 +9,7 @@ import {
   settleCspPaymentSplit,
   reverseCspPaymentSplit,
 } from '../services/cspPaymentSplit.service.js';
-import { availableStockForName, computeStockByProductNames } from '../utils/inventoryStock.utils.js';
+import { computeStockByProductNames } from '../utils/inventoryStock.utils.js';
 import {
   appendTransaction,
   debitWalletForPurchase,
@@ -84,7 +84,7 @@ const assertSufficientPurchaseStock = async ({
   }
 
   for (const [name, requestedQty] of requestedQtyMap.entries()) {
-    const availableQty = availableStockForName(stockMap, name);
+    const availableQty = Number(stockMap.get(name) ?? 0);
     if (requestedQty > availableQty) {
       return {
         success: false,
@@ -329,8 +329,9 @@ const notifyActivityUpdateWhatsApp = async ({
       Math.round((Number(walletBalance) + Number.EPSILON) * 100) / 100,
     );
 
-   // WhatsApp "Download Invoice" is a dynamic URL ending in /activities/{{1}}.
-    // {{1}} must be this bill's id so the link opens that customer's invoice.
+    // WhatsApp "Download Invoice" is a dynamic URL ending in /activities/{{1}}.
+    // {{1}} is this bill's id. That page is public, so the customer opens it
+    // without logging in.
     const detailsUrlParam = String(invoice?._id || '').trim();
 
     const membershipLabel = membershipLabelForCustomer(
