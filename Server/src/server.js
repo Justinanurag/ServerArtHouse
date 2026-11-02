@@ -69,10 +69,25 @@ app.use(
     crossOriginResourcePolicy: {policy: 'cross-origin'},
   }),
 );
+const allowedOrigins = [
+  "https://woo-woo-erp-5iyu.vercel.app",
+  "http://localhost:5173",
+];
+
 app.use(
   cors({
-    origin: true,
+    origin: (origin, callback) => {
+      // Allow requests without an Origin header, such as server-to-server calls.
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    optionsSuccessStatus: 204,
   }),
 );
 app.use(cookieParser());
@@ -95,6 +110,23 @@ app.use((req, _res, next) => {
   };
   if (req.body) stripKeys(req.body);
   next();
+});
+
+// Queries use bufferCommands: false, so a request must wait for MongoDB.
+app.use(async (req, res, next) => {
+  if (req.path === '/' && req.method === 'GET') return next();
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    console.error('MongoDB not ready:', error?.message || error);
+    if (!res.headersSent) {
+      res.status(503).json({
+        success: false,
+        message: 'Database is not ready. Please try again.',
+      });
+    }
+  }
 });
 
 // Admin / existing ERP APIs 
@@ -141,9 +173,7 @@ app.use('/hap', hapRouters);
 app.use('/api/customer', customerAuthRoutes);
 //send whatsapp announcement
 app.use('/api/announcement', sentAnnouncement);
-
 //Expences module
-
 app.use('/api/expences', expenceRoutes);
 app.use('/api/expences/category', expenceCategoryRoutes);
 app.use('/dashboard', dashboardRoutes);
@@ -155,14 +185,18 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 //Exhibition module
 app.use('/api/exhibition',exhibitionRoutes);
 
-connectDB();
-
-app.get('/', (req, res) => {
-  res.send('🚀 Server is live and running...');
+app.get("/", (req, res) => {
+  res.send("🚀 Server is live and running...");
 });
 
+// Warm the connection on boot. Requests still await connectDB() above.
+void connectDB().catch(() => {});
 app.use(customerErrorHandler);
 
-app.listen(PORT, () => {
-  console.log(`🌐 Server is running on port ${PORT}`);
+app.listen(PORT, async () => {
+  console.log(`Server is running on port ${PORT}`);
+  await checkRedisConnection();
 });
+
+// Export the Express application for Vercel.
+export default app;
