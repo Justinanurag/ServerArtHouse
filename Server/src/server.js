@@ -69,10 +69,23 @@ app.use(
     crossOriginResourcePolicy: {policy: 'cross-origin'},
   }),
 );
+const allowedOrigins = [
+  "https://woo-woo-erp-5iyu.vercel.app",
+  "http://localhost:5173",
+];
 app.use(
   cors({
-    origin: true,
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    optionsSuccessStatus: 204,
   }),
 );
 app.use(cookieParser());
