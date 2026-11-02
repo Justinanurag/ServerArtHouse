@@ -62,16 +62,20 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (_req, file, cb) => {
-  const allowed = /jpeg|jpg|png|webp/;
-  cb(null, allowed.test(file.mimetype));
+  const isImage = /^image\/(jpeg|jpg|png|webp)$/.test(file.mimetype);
+  const isVideo = /^video\/(mp4|webm|quicktime)$/.test(file.mimetype);
+  if ((file.fieldname === 'images' || file.fieldname === 'image') && isImage) {
+    return cb(null, true);
+  }
+  if (file.fieldname === 'video' && isVideo) return cb(null, true);
+  cb(null, false);
 };
 
 export const uploadSpaceImage = multer({
   storage,
   fileFilter,
-  limits: {fileSize: 5 * 1024 * 1024},
+  limits: {fileSize: 50 * 1024 * 1024},
 });
-
 const ALLOWED_STATUS = new Set(['Available', 'Booked', 'Maintenance']);
 const DAY_SET = new Set(SPACE_DAYS);
 
@@ -302,23 +306,60 @@ const buildSpacePayload = (body = {}, imageUrl, {partial = false} = {}) => {
   return {name, payload};
 };
 
-const resolveImageUrl = async req => {
-  if (!req.file?.path) return undefined;
+const uploadSpaceFile = async file => {
+  if (!file?.path) return null;
   try {
-    const uploadedUrl = await uploadOnCloudinary(req.file.path, {
+    const uploadedUrl = await uploadOnCloudinary(file.path, {
       folder: 'woowoo/spaces',
     });
     return uploadedUrl || null;
   } catch (error) {
-    console.error('space image upload error:', error);
+    console.error('space media upload error:', error);
     return null;
   }
 };
 
+const resolveSpaceMedia = async req => {
+  const imageFiles = [
+    ...(req.files?.images || []),
+    ...(req.files?.image || []),
+  ].filter(file => !file.size || file.size <= 5 * 1024 * 1024);
+  const uploadedImages = [];
+  for (const file of imageFiles) {
+    const url = await uploadSpaceFile(file);
+    if (url) uploadedImages.push(url);
+  }
+  const videoUrl = await uploadSpaceFile(req.files?.video?.[0]);
+  const kept =
+    req.body.existingImages !== undefined
+      ? String(req.body.existingImages || '')
+          .split(',')
+          .map(item => item.trim())
+          .filter(item => /^https?:\/\//i.test(item))
+      : null;
+  const images = kept ? [...kept, ...uploadedImages].slice(0, 8) : uploadedImages;
+  const hasImages = kept !== null || uploadedImages.length > 0;
+  return {
+    images: hasImages ? images.slice(0, 8) : undefined,
+    imageUrl: hasImages ? images[0] || null : undefined,
+    videoUrl: videoUrl || undefined,
+    removeVideo: String(req.body.removeVideo || '').toLowerCase() === 'true',
+  };
+};
+
+const applySpaceMedia = (payload, media) => {
+  if (media.images) {
+    payload.images = media.images;
+    payload.imageUrl = media.imageUrl ?? null;
+  }
+  if (media.videoUrl) payload.videoUrl = media.videoUrl;
+  if (media.removeVideo && !media.videoUrl) payload.videoUrl = null;
+};
+
 export const createSpace = async (req, res) => {
   try {
-    const imageUrl = await resolveImageUrl(req);
-    const {name, payload, error} = buildSpacePayload(req.body, imageUrl);
+    const media = await resolveSpaceMedia(req);
+    const {name, payload, error} = buildSpacePayload(req.body, media.imageUrl);
 
     if (error) {
       return res.status(400).json({success: false, message: error});
@@ -340,6 +381,7 @@ export const createSpace = async (req, res) => {
     if (!payload.spaceCode) {
       payload.spaceCode = await generateNextSpaceCode();
     }
+    applySpaceMedia(payload, media);
 
     const createBothDays =
       String(req.body.createBothDays).toLowerCase() === 'true' ||
@@ -382,6 +424,8 @@ export const createSpace = async (req, res) => {
         capacity: payload.capacity || 1,
         description: payload.description || '',
         imageUrl: payload.imageUrl ?? null,
+        images: payload.images || [],
+        videoUrl: payload.videoUrl ?? null,
         createdBy,
       };
 
@@ -699,10 +743,11 @@ export const updateSpace = async (req, res) => {
       });
     }
 
-    const imageUrl = await resolveImageUrl(req);
-    const {name, payload, error} = buildSpacePayload(req.body, imageUrl, {
+    const media = await resolveSpaceMedia(req);
+    const {name, payload, error} = buildSpacePayload(req.body, media.imageUrl, {
       partial: true,
     });
+    applySpaceMedia(payload, media);
 
     if (error) {
       return res.status(400).json({success: false, message: error});
@@ -781,6 +826,9 @@ export const updateSpace = async (req, res) => {
           payload.imageUrl !== undefined
             ? payload.imageUrl
             : existing.imageUrl,
+        images: payload.images !== undefined ? payload.images : existing.images,
+        videoUrl:
+          payload.videoUrl !== undefined ? payload.videoUrl : existing.videoUrl,
         createdBy: existing.createdBy,
       };
 

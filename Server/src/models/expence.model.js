@@ -9,7 +9,22 @@ const expenceSchema = new mongoose.Schema(
       ref: 'ExpenceCategory',
       default: null,
     },
-    segment: { type: String, trim: true, default: '', enum: ['Store','Cafe','Services','Space','general',''] },
+    segment: {
+      type: String,
+      trim: true,
+      default: '',
+      enum: [
+        'Store',
+        'Cafe',
+        'Services',
+        'Space',
+        'Events',
+        'General',
+        'Admin',
+        'general',
+        '',
+      ],
+    },
     category: {
       type: String,
       trim: true,

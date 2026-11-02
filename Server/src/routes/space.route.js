@@ -22,19 +22,31 @@ router.get('/:id', requirePermission(PERMISSIONS.SPACE_READ), getSpaceById);
 router.post(
   '/',
   requirePermission(PERMISSIONS.SPACE_CREATE),
-  uploadSpaceImage.single('image'),
+  uploadSpaceImage.fields([
+    {name: 'images', maxCount: 8},
+    {name: 'image', maxCount: 1},
+    {name: 'video', maxCount: 1},
+  ]),
   createSpace,
 );
 router.put(
   '/:id',
   requirePermission(PERMISSIONS.SPACE_UPDATE),
-  uploadSpaceImage.single('image'),
+  uploadSpaceImage.fields([
+    {name: 'images', maxCount: 8},
+    {name: 'image', maxCount: 1},
+    {name: 'video', maxCount: 1},
+  ]),
   updateSpace,
 );
 router.patch(
   '/:id',
   requirePermission(PERMISSIONS.SPACE_UPDATE),
-  uploadSpaceImage.single('image'),
+  uploadSpaceImage.fields([
+    {name: 'images', maxCount: 8},
+    {name: 'image', maxCount: 1},
+    {name: 'video', maxCount: 1},
+  ]),
   updateSpace,
 );
 router.delete('/:id', requirePermission(PERMISSIONS.SPACE_DELETE), deleteSpace);

@@ -637,6 +637,20 @@ const createInvoice = async (req, res) => {
       });
     }
 
+      const linkedInvoiceId = String(req.body?.invoiceId || '').trim();
+    if (
+      linkedInvoiceId &&
+      mongoose.Types.ObjectId.isValid(linkedInvoiceId)
+    ) {
+      const existingLinked = await Invoice.findById(linkedInvoiceId).select(
+        '_id status',
+      );
+      if (existingLinked && existingLinked.status !== 'cancelled') {
+        req.params.id = linkedInvoiceId;
+        return updateInvoice(req, res);
+      }
+    }
+
     const invoiceDateObj = new Date(invoiceDate);
     const dueDateObj = new Date(dueDate);
     if (Number.isNaN(invoiceDateObj.getTime()) || Number.isNaN(dueDateObj.getTime())) {
