@@ -1,34 +1,48 @@
 import mongoose from "mongoose";
 import { ensureCustomerIndexes } from "../utils/ensureCustomerIndexes.js";
 
-let cached = global.mongoose;
-
-if (!cached) {
-  cached = global.mongoose = {
+const cached =
+  global.mongoose ||
+  (global.mongoose = {
     conn: null,
     promise: null,
-  };
-}
+  });
 
 const connectDB = async () => {
-  // Reuse existing connection
-  if (cached.conn && mongoose.connection.readyState === 1) {
+  // Reuse a healthy existing connection
+  if (
+    cached.conn &&
+    mongoose.connection.readyState === 1
+  ) {
     return cached.conn;
   }
 
-  // Reuse existing connection promise if connection is in progress
+  // Clear stale cached state when disconnected
+  if (mongoose.connection.readyState === 0) {
+    cached.conn = null;
+    cached.promise = null;
+  }
+
+  // Reuse an in-progress connection attempt
   if (!cached.promise) {
-    const opts = {
-      bufferCommands: false,
-    };
+    const mongoUri = process.env.MONGODB_URI;
+
+    if (!mongoUri) {
+      throw new Error("MONGODB_URI is not configured");
+    }
 
     cached.promise = mongoose
-      .connect(process.env.MONGODB_URI, opts)
+      .connect(mongoUri, {
+        bufferCommands: false,
+        serverSelectionTimeoutMS: 10000,
+      })
       .then(async (mongooseInstance) => {
         console.log("✅ MongoDB connected successfully!");
 
         try {
-          await ensureCustomerIndexes(mongooseInstance.connection.db);
+          await ensureCustomerIndexes(
+            mongooseInstance.connection.db
+          );
         } catch (error) {
           console.error(
             "Failed to ensure customer indexes:",
@@ -39,8 +53,14 @@ const connectDB = async () => {
         return mongooseInstance;
       })
       .catch((error) => {
-        // Allow a future request to retry the connection
+        cached.conn = null;
         cached.promise = null;
+
+        console.error(
+          "❌ MongoDB connection failed:",
+          error.message
+        );
+
         throw error;
       });
   }

@@ -141,9 +141,7 @@ app.use('/hap', hapRouters);
 app.use('/api/customer', customerAuthRoutes);
 //send whatsapp announcement
 app.use('/api/announcement', sentAnnouncement);
-
 //Expences module
-
 app.use('/api/expences', expenceRoutes);
 app.use('/api/expences/category', expenceCategoryRoutes);
 app.use('/dashboard', dashboardRoutes);
@@ -155,16 +153,30 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 //Exhibition module
 app.use('/api/exhibition',exhibitionRoutes);
 
-connectDB();
-
-
-app.get('/', (req, res) => {
-  res.send('🚀 Server is live and running...');
+app.get("/", (req, res) => {
+  res.send("🚀 Server is live and running...");
 });
 
 app.use(customerErrorHandler);
 
-app.listen(PORT, () => {
-  console.log(`🌐 Server is running on port ${PORT}`);
-  checkRedisConnection();
-});
+// Start the server only after MongoDB connects
+const startServer = async () => {
+  try {
+    await connectDB();
+
+    console.log("✅ MongoDB connection is ready");
+
+    app.listen(PORT, () => {
+      console.log(`🌐 Server is running on port ${PORT}`);
+
+      checkRedisConnection().catch((error) => {
+        console.error("Redis connection error:", error);
+      });
+    });
+  } catch (error) {
+    console.error("❌ Failed to initialize the server:", error);
+    process.exit(1);
+  }
+};
+
+startServer();
