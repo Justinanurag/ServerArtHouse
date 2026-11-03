@@ -469,6 +469,8 @@ const getCustomerById = async (req, res) => {
 const getCustomers = async (req, res) => {
   try {
     const search = String(req.query.search ?? '').trim();
+    const fromDate = String(req.query.fromDate ?? '').trim();
+    const toDate = String(req.query.toDate ?? '').trim();
     console.log(search);
 
     const limit = Math.min(
@@ -481,6 +483,16 @@ const getCustomers = async (req, res) => {
     const includeTotal = String(req.query.includeTotal ?? 'true') !== 'false';
 
     const query = buildCustomerListQuery(search);
+     const createdRange = {};
+    if (fromDate) {
+      const from = new Date(`${fromDate}T00:00:00.000`);
+      if (!Number.isNaN(from.getTime())) createdRange.$gte = from;
+    }
+    if (toDate) {
+      const to = new Date(`${toDate}T23:59:59.999`);
+      if (!Number.isNaN(to.getTime())) createdRange.$lte = to;
+    }
+    if (Object.keys(createdRange).length) query.createdAt = createdRange;
 
     const findQuery = Customer.find(query)
       .select(CUSTOMER_LIST_PROJECTION)

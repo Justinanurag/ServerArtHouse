@@ -3,6 +3,7 @@ import Counter from '../models/counter.model.js';
 import Customer from '../models/customer.model.js';
 import Coupon from '../models/coupon.model.js';
 import Invoice from '../models/invoice.model.js';
+import SpaceBooking from '../models/spaceBooking.model.js';
 import Wallet from '../models/wallet.model.js';
 import {
   enrichItemsWithCsp,
@@ -1118,20 +1119,37 @@ const createInvoice = async (req, res) => {
     });
   }
 };
+/** Invoices created from space booking checkout, including ones already linked. */
+const bookingInvoiceMatch = async () => {
+  const linkedIds = await SpaceBooking.distinct('invoiceId', {
+    invoiceId: {$ne: null},
+  });
+  return {
+    $or: [
+      {_id: {$in: linkedIds}},
+      {notes: {$regex: /^space booking/i}},
+    ],
+  };
+};
+
 const getInvoices=async(req,res)=>{
     try {
         const search = String(req.query.search ?? '').trim();
         const fromDate=String(req.query.fromDate ?? '').trim();
         const toDate=String(req.query.toDate ?? '').trim();
+        const billScope = String(req.query.billScope ?? '').trim().toLowerCase();
         const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 5000);
         const query = {};
+        const and = [];
         if (search) {
           const regex = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-          query.$or = [
-            { customerName: regex },
-            { customerPhone: regex },
-            { invoiceCode: regex },
-          ];
+          and.push({
+            $or: [
+              { customerName: regex },
+              { customerPhone: regex },
+              { invoiceCode: regex },
+            ],
+          });
         }
         const dateFilter = {};
         if(fromDate){
@@ -1146,6 +1164,11 @@ const getInvoices=async(req,res)=>{
         if (Object.keys(dateFilter).length) {
           query.invoiceDate = dateFilter;
         }
+        if (billScope === 'sales' || billScope === 'booking') {
+          const bookingMatch = await bookingInvoiceMatch();
+          and.push(billScope === 'booking' ? bookingMatch : {$nor: [bookingMatch]});
+        }
+        if (and.length) query.$and = and;
         const invoices = await Invoice.find(query)
           .sort({createdAt: -1})
           .limit(limit)
