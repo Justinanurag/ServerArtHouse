@@ -70,8 +70,14 @@ app.use(
   }),
 );
 const allowedOrigins = [
+   "https://www.woowooarthouse.in",
+  "https://woowooarthouse.in",
+  "https://admin.woowooarthouse.in",
+  "https://api.woowooarthouse.in",
+  "https://woo-woo-erp.vercel.app",
   "https://woo-woo-erp-5iyu.vercel.app",
   "http://localhost:5173",
+  "http://localhost:5174",
 ];
 
 app.use(
