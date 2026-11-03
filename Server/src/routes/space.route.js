@@ -25,7 +25,7 @@ router.post(
   uploadSpaceImage.fields([
     {name: 'images', maxCount: 8},
     {name: 'image', maxCount: 1},
-    {name: 'video', maxCount: 1},
+    {name: 'video', maxCount: 4},
   ]),
   createSpace,
 );
@@ -35,7 +35,7 @@ router.put(
   uploadSpaceImage.fields([
     {name: 'images', maxCount: 8},
     {name: 'image', maxCount: 1},
-    {name: 'video', maxCount: 1},
+    {name: 'video', maxCount: 4},
   ]),
   updateSpace,
 );
@@ -45,7 +45,7 @@ router.patch(
   uploadSpaceImage.fields([
     {name: 'images', maxCount: 8},
     {name: 'image', maxCount: 1},
-    {name: 'video', maxCount: 1},
+    {name: 'video', maxCount: 4},
   ]),
   updateSpace,
 );

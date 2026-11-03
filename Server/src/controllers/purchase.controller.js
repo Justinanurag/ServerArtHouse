@@ -36,6 +36,41 @@ export const uploadPurchaseAttachments = multer({
   limits: {fileSize: 5 * 1024 * 1024}, // 5MB
 });
 
+const PURCHASE_PREFIX = "PURCHASE: ";
+
+/** Drop prefixes so a purchase order number is not saved as PURCHASE: PURCHASE ODR:… */
+const purchaseNumberCore = (value) =>
+  String(value ?? "")
+    .trim()
+    .replace(/^(PURCHASE:\s*)+/gi, "")
+    .replace(/^PURCHASE\s*ODR:\s*/i, "")
+    .trim();
+
+const resolvePurchaseInvoiceNumber = async (raw) => {
+  const trimmed = String(raw ?? "").trim();
+  const core = purchaseNumberCore(trimmed) || String(Date.now());
+  const alreadyPrefixed = /PURCHASE/i.test(trimmed);
+  const aliases = [
+    trimmed,
+    `${PURCHASE_PREFIX}${trimmed}`,
+    `${PURCHASE_PREFIX}${core}`,
+    `${PURCHASE_PREFIX}PURCHASE ODR:${core}`,
+  ];
+
+  if (alreadyPrefixed) {
+    const existing = await Purchase.findOne({invoiceNumber: {$in: aliases}});
+    if (existing) return {invoiceNumber: existing.invoiceNumber, existing};
+  }
+
+  let invoiceNumber = `${PURCHASE_PREFIX}${core}`;
+  let suffix = 0;
+  while (await Purchase.exists({invoiceNumber})) {
+    suffix += 1;
+    invoiceNumber = `${PURCHASE_PREFIX}${core}-${suffix}`;
+  }
+  return {invoiceNumber, existing: null};
+};
+
 export const createPurchase = async (req, res) => {
   try {
     const {
@@ -97,7 +132,6 @@ export const createPurchase = async (req, res) => {
           };
         })
       : [];
-    const purchasePrefix="PURCHASE: ";
     const amountNum = Number(amount ?? 0);
     const paymentFields = resolvePurchasePaymentFields({
       amount: amountNum,
@@ -107,8 +141,17 @@ export const createPurchase = async (req, res) => {
       paidAmount,
       dueAmount,
     });
+   const resolvedNumber = await resolvePurchaseInvoiceNumber(invoiceNumber);
+   if (resolvedNumber.existing) {
+     return res.status(200).json({
+       success: true,
+       purchase: resolvedNumber.existing,
+       alreadyExists: true,
+     });
+   }
+
    const purchase = await Purchase.create({
-  invoiceNumber: purchasePrefix + String(invoiceNumber).trim(),
+  invoiceNumber: resolvedNumber.invoiceNumber,
 
   invoiceDate: invoiceDate ? new Date(invoiceDate) : null,
 
@@ -197,6 +240,28 @@ export const createPurchase = async (req, res) => {
 
     return res.status(201).json({ success: true, purchase });
   } catch (error) {
+    if (error?.code === 11000) {
+      const existing = await Purchase.findOne({
+        invoiceNumber: {
+          $in: [
+            String(req.body?.invoiceNumber ?? "").trim(),
+            `${PURCHASE_PREFIX}${purchaseNumberCore(req.body?.invoiceNumber)}`,
+            `${PURCHASE_PREFIX}PURCHASE ODR:${purchaseNumberCore(req.body?.invoiceNumber)}`,
+          ],
+        },
+      });
+      if (existing) {
+        return res.status(200).json({
+          success: true,
+          purchase: existing,
+          alreadyExists: true,
+        });
+      }
+      return res.status(409).json({
+        success: false,
+        message: "A purchase with this number already exists.",
+      });
+    }
     return res.status(500).json({ success: false, message: error.message });
   }
 };

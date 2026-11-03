@@ -104,6 +104,10 @@ const spaceSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    videos: {
+      type: [String],
+      default: [],
+    },
     createdBy: {
       m_staff_id: {type: String, default: null},
       m_staff_name: {type: String, default: null},

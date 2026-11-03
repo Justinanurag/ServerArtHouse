@@ -387,14 +387,24 @@ const CUSTOMER_LIST_PROJECTION =
 
 /** Build list filter — avoid broad case-insensitive $or scans when possible. */
 const buildCustomerListQuery = searchRaw => {
-  const query = {isDeleted: {$ne: true}};
+  const query = { isDeleted: { $ne: true } };
   const search = String(searchRaw ?? '').trim();
+
   if (!search) return query;
 
   const digits = search.replace(/\D/g, '');
   const compact = search.replace(/[\s+\-()]/g, '');
-  // Phone-ish input: use prefix on unique indexed mobile (index-friendly)
+
+  // Phone number search
   if (digits.length >= 3 && digits === compact) {
+
+    // Exactly 4 digits: search by last 4 digits
+    if (digits.length === 4) {
+      query.mobile = new RegExp(`${escapeRegex(digits)}$`);
+      return query;
+    }
+
+    // 3+ digits: search by mobile prefix
     query.mobile = new RegExp(`^${escapeRegex(digits)}`);
     return query;
   }
@@ -404,15 +414,17 @@ const buildCustomerListQuery = searchRaw => {
   const prefix = new RegExp(`^${escaped}`, 'i');
 
   query.$or = [
-    {name: prefix},
-    {mobile: contains},
-    {email: contains},
-    {companyName: contains},
-    {gstin: contains},
-    {referralCode: prefix},
+    { name: prefix },
+    { mobile: contains },
+    { email: contains },
+    { companyName: contains },
+    { gstin: contains },
+    { referralCode: prefix },
   ];
+
   return query;
 };
+
 
 const getCustomerById = async (req, res) => {
   try {
@@ -457,6 +469,7 @@ const getCustomerById = async (req, res) => {
 const getCustomers = async (req, res) => {
   try {
     const search = String(req.query.search ?? '').trim();
+    console.log(search);
 
     const limit = Math.min(
       Math.max(Number(req.query.limit) || 50, 1),

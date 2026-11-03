@@ -319,6 +319,8 @@ const uploadSpaceFile = async file => {
   }
 };
 
+const MAX_SPACE_VIDEOS = 4;
+
 const resolveSpaceMedia = async req => {
   const imageFiles = [
     ...(req.files?.images || []),
@@ -329,7 +331,12 @@ const resolveSpaceMedia = async req => {
     const url = await uploadSpaceFile(file);
     if (url) uploadedImages.push(url);
   }
-  const videoUrl = await uploadSpaceFile(req.files?.video?.[0]);
+  const videoFiles = (req.files?.video || []).slice(0, MAX_SPACE_VIDEOS);
+  const uploadedVideos = [];
+  for (const file of videoFiles) {
+    const url = await uploadSpaceFile(file);
+    if (url) uploadedVideos.push(url);
+  }
   const kept =
     req.body.existingImages !== undefined
       ? String(req.body.existingImages || '')
@@ -337,12 +344,24 @@ const resolveSpaceMedia = async req => {
           .map(item => item.trim())
           .filter(item => /^https?:\/\//i.test(item))
       : null;
+  const keptVideos =
+    req.body.existingVideos !== undefined
+      ? String(req.body.existingVideos || '')
+          .split(',')
+          .map(item => item.trim())
+          .filter(item => /^https?:\/\//i.test(item))
+      : null;
   const images = kept ? [...kept, ...uploadedImages].slice(0, 8) : uploadedImages;
   const hasImages = kept !== null || uploadedImages.length > 0;
+  const videos = keptVideos
+    ? [...keptVideos, ...uploadedVideos].slice(0, MAX_SPACE_VIDEOS)
+    : uploadedVideos;
+  const hasVideos = keptVideos !== null || uploadedVideos.length > 0;
   return {
     images: hasImages ? images.slice(0, 8) : undefined,
     imageUrl: hasImages ? images[0] || null : undefined,
-    videoUrl: videoUrl || undefined,
+    videos: hasVideos ? videos : undefined,
+    videoUrl: hasVideos ? videos[0] || null : undefined,
     removeVideo: String(req.body.removeVideo || '').toLowerCase() === 'true',
   };
 };
@@ -352,8 +371,16 @@ const applySpaceMedia = (payload, media) => {
     payload.images = media.images;
     payload.imageUrl = media.imageUrl ?? null;
   }
-  if (media.videoUrl) payload.videoUrl = media.videoUrl;
-  if (media.removeVideo && !media.videoUrl) payload.videoUrl = null;
+  if (media.videos) {
+    payload.videos = media.videos;
+    payload.videoUrl = media.videos[0] || null;
+  } else if (media.videoUrl) {
+    payload.videoUrl = media.videoUrl;
+    payload.videos = [media.videoUrl];
+  } else if (media.removeVideo) {
+    payload.videoUrl = null;
+    payload.videos = [];
+  }
 };
 
 export const createSpace = async (req, res) => {
@@ -425,6 +452,7 @@ export const createSpace = async (req, res) => {
         description: payload.description || '',
         imageUrl: payload.imageUrl ?? null,
         images: payload.images || [],
+        videos: payload.videos || [],
         videoUrl: payload.videoUrl ?? null,
         createdBy,
       };
@@ -827,6 +855,7 @@ export const updateSpace = async (req, res) => {
             ? payload.imageUrl
             : existing.imageUrl,
         images: payload.images !== undefined ? payload.images : existing.images,
+        videos: payload.videos !== undefined ? payload.videos : existing.videos,
         videoUrl:
           payload.videoUrl !== undefined ? payload.videoUrl : existing.videoUrl,
         createdBy: existing.createdBy,

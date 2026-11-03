@@ -637,7 +637,7 @@ const createInvoice = async (req, res) => {
       });
     }
 
-      const linkedInvoiceId = String(req.body?.invoiceId || '').trim();
+    const linkedInvoiceId = String(req.body?.invoiceId || '').trim();
     if (
       linkedInvoiceId &&
       mongoose.Types.ObjectId.isValid(linkedInvoiceId)
@@ -1350,7 +1350,16 @@ const updateInvoice = async (req, res) => {
     }
 
     const invoiceDateObj = invoiceDate ? new Date(invoiceDate) : undefined;
-    const dueDateObj = dueDate ? new Date(dueDate) : undefined;
+    let dueDateObj;
+    if (dueDate !== undefined && dueDate !== null && String(dueDate).trim() !== "") {
+      dueDateObj = new Date(dueDate);
+      if (Number.isNaN(dueDateObj.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid due date.",
+        });
+      }
+    }
 
     let normalizedItems;
     if (items && Array.isArray(items)) {
@@ -1409,6 +1418,17 @@ const updateInvoice = async (req, res) => {
     if (normalizedItems !== undefined) updateData.items = normalizedItems;
     if (subTotal !== undefined) updateData.subTotal = Number(subTotal);
     if (discountTotal !== undefined) updateData.discountTotal = Number(discountTotal);
+    if (req.body?.manualDiscount !== undefined) {
+      const manualDiscount = req.body.manualDiscount;
+      updateData.manualDiscount =
+        manualDiscount && Number(manualDiscount.discountAmount) > 0
+          ? {
+              type: manualDiscount.type === 'percentage' ? 'percentage' : 'flat',
+              value: Number(manualDiscount.value || 0),
+              discountAmount: Number(manualDiscount.discountAmount || 0),
+            }
+          : { type: null, value: 0, discountAmount: 0 };
+    }
     if (extraCharges !== undefined) updateData.extraCharges = Array.isArray(extraCharges) ? extraCharges : [];
     if (grandTotal !== undefined) updateData.grandTotal = Number(grandTotal);
     if (status !== undefined) updateData.status = status;
@@ -1453,10 +1473,21 @@ const updateInvoice = async (req, res) => {
         const extraChargesTotal = Array.isArray(updateData.extraCharges ?? existingInvoice.extraCharges)
           ? (updateData.extraCharges ?? existingInvoice.extraCharges).reduce((sum, c) => sum + Number(c.amount ?? 0), 0)
           : 0;
+        const couponItems = updateData.items ?? existingInvoice.items ?? [];
+        const lineDiscountTotal = Array.isArray(couponItems)
+          ? couponItems.reduce((sum, item) => sum + Number(item.discount ?? 0), 0)
+          : 0;
+        // discountTotal already includes the coupon, so a 100% coupon would look like ₹0.
+        const preCouponAmount = Math.max(
+          0,
+          Number(updateData.subTotal ?? existingInvoice.subTotal ?? 0) -
+            lineDiscountTotal +
+            extraChargesTotal,
+        );
 
         const couponValidation = await validateCouponForOrder({
           code: coupon.code,
-          orderAmount: Number(updateData.subTotal ?? existingInvoice.subTotal) - Number(updateData.discountTotal ?? existingInvoice.discountTotal ?? 0) + extraChargesTotal,
+          orderAmount: preCouponAmount,
           customerPhone: String(updateData.customerPhone ?? existingInvoice.customerPhone ?? '').trim(),
           ignoreInvoiceId: id,
           items: updateData.items ?? existingInvoice.items,
