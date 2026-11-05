@@ -4,6 +4,8 @@ import Space from '../models/space.model.js';
 import Food from '../models/food.model.js';
 import AdditionalService from '../models/additionalService.model.js';
 import Customer from '../models/customer.model.js';
+import Wallet from '../models/wallet.model.js';
+import {appendTransaction} from './wallet.controller.js';
 import Membership from '../models/membership.model.js';
 import {computeBookingStatus} from './spaceBooking.controller.js';
 import {
@@ -188,11 +190,30 @@ const serialize = (doc, customer) => {
     cashbackTotal: Number(plain.cashbackTotal) || 0,
     subTotal: Number(plain.subTotal) || 0,
     grandTotal: Number(plain.grandTotal) || 0,
-    paidAmount: Number(plain.paidAmount) || 0,
-    dueAmount: Number(plain.dueAmount) || 0,
+    paidAmount: (() => {
+      const total = Number(plain.grandTotal) || 0;
+      const paid = Number(plain.paidAmount) || 0;
+      const due = Number(plain.dueAmount) || 0;
+      const remaining = due > 0 ? due : Math.max(0, total - paid);
+      return remaining < 1 && (paid > 0 || remaining === 0) ? total || paid : paid;
+    })(),
+    dueAmount: (() => {
+      const total = Number(plain.grandTotal) || 0;
+      const paid = Number(plain.paidAmount) || 0;
+      const due = Number(plain.dueAmount) || 0;
+      const remaining = due > 0 ? due : Math.max(0, total - paid);
+      return remaining < 1 && (paid > 0 || remaining === 0) ? 0 : due;
+    })(),
     status: plain.status || 'Draft',
     notes: plain.notes || '',
-    paymentStatus: plain.paymentStatus || '',
+    paymentStatus: (() => {
+      const total = Number(plain.grandTotal) || 0;
+      const paid = Number(plain.paidAmount) || 0;
+      const due = Number(plain.dueAmount) || 0;
+      const remaining = due > 0 ? due : Math.max(0, total - paid);
+      if (remaining < 1 && (paid > 0 || remaining === 0)) return 'full';
+      return plain.paymentStatus || '';
+    })(),
     createdAt: plain.createdAt || null,
   };
 };
@@ -569,6 +590,101 @@ export const updateAllBooking = async (req, res) => {
     }
     console.error('updateAllBooking error:', error);
     return res.status(500).json({success: false, message: 'Failed to update booking.'});
+  }
+};
+
+export const receiveAllBookingPayment = async (req, res) => {
+  try {
+    const {id} = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({success: false, message: 'Invalid booking id.'});
+    }
+    const booking = await AllBooking.findById(id);
+    if (!booking) {
+      return res.status(404).json({success: false, message: 'Booking not found.'});
+    }
+    if (booking.status === 'Cancelled') {
+      return res.status(400).json({success: false, message: 'A cancelled booking cannot take a payment.'});
+    }
+    const total = roundMoney(booking.grandTotal);
+    const already = roundMoney(booking.paidAmount);
+    const due = roundMoney(
+      Number(booking.dueAmount) > 0 ? booking.dueAmount : Math.max(0, total - already),
+    );
+    if (due <= 0.009) {
+      return res.status(400).json({success: false, message: 'This booking has no pending amount.'});
+    }
+    const amount = roundMoney(req.body?.amount);
+    const mode = String(req.body?.mode || '').trim();
+    if (!(amount > 0) || amount - due > 0.009) {
+      return res.status(400).json({
+        success: false,
+        message: `Enter an amount up to ₹${due.toFixed(2)}.`,
+      });
+    }
+    if (!['Cash', 'UPI', 'Wallet', 'Card', 'Multi'].includes(mode)) {
+      return res.status(400).json({success: false, message: 'Choose a valid payment mode.'});
+    }
+    const referenceId = `all-booking-pay:${booking._id}:${Date.now()}`;
+    const actor = {
+      m_staff_id: req.user?.m_staff_id || req.user?.userId || null,
+      m_staff_name: req.user?.name || null,
+      m_staff_email: req.user?.email || null,
+    };
+    const walletTake = mode === 'Wallet'
+      ? amount
+      : roundMoney(req.body?.walletAmount);
+    if (walletTake > 0.009) {
+      const phone = last10(booking.customerPhone);
+      const customer = phone.length === 10
+        ? await Customer.findOne({mobile: new RegExp(`${phone}$`)})
+        : null;
+      if (!customer) {
+        return res.status(400).json({
+          success: false,
+          message: 'Customer wallet was not found for this phone number.',
+        });
+      }
+      const wallet = await Wallet.findOne({customerId: customer._id});
+      if (!wallet) {
+        return res.status(400).json({success: false, message: 'Customer does not have a wallet balance.'});
+      }
+      await appendTransaction(wallet, {
+        type: 'debit',
+        amount: walletTake,
+        note: `Due payment for booking ${booking.bookingCode || booking._id}`,
+        referenceType: 'AllBooking',
+        referenceId,
+        createdBy: actor,
+      });
+    }
+    const paid = roundMoney(already + amount);
+    const nextDue = roundMoney(Math.max(0, total - paid));
+    const settled = nextDue < 1;
+    booking.paidAmount = settled ? total : paid;
+    booking.dueAmount = settled ? 0 : nextDue;
+    booking.paymentStatus = settled ? 'full' : 'partial';
+    if (!Array.isArray(booking.payments)) booking.payments = [];
+    booking.payments.push({
+      amount,
+      mode,
+      note: `Due payment for booking ${booking.bookingCode || booking._id}`,
+      referenceId,
+      createdAt: new Date(),
+    });
+    await booking.save();
+    const customer = await findCustomer(booking.customerPhone);
+    return res.status(200).json({
+      success: true,
+      message: 'Payment recorded.',
+      booking: serialize(booking.toObject(), customer),
+    });
+  } catch (error) {
+    console.error('receiveAllBookingPayment error:', error);
+    return res.status(400).json({
+      success: false,
+      message: error.message || 'Failed to record payment.',
+    });
   }
 };
 

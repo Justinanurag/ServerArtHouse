@@ -189,6 +189,51 @@ const spaceBookingSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    /** Amount before the first reschedule. Later bills compare against grandTotal. */
+    originalAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    payments: [
+      {
+        kind: {type: String, enum: ['payment', 'refund'], required: true},
+        amount: {type: Number, required: true, min: 0},
+        mode: {type: String, default: '', trim: true},
+        walletType: {type: String, default: '', trim: true},
+        note: {type: String, default: '', trim: true},
+        referenceId: {type: String, default: '', trim: true},
+        createdAt: {type: Date, default: Date.now},
+        createdBy: {
+          m_staff_id: {type: String, default: null},
+          m_staff_name: {type: String, default: null},
+          m_staff_email: {type: String, default: null},
+        },
+      },
+    ],
+    reschedules: [
+      {
+        previousDate: {type: Date, default: null},
+        newDate: {type: Date, default: null},
+        previousStart: {type: String, default: ''},
+        previousEnd: {type: String, default: ''},
+        newStart: {type: String, default: ''},
+        newEnd: {type: String, default: ''},
+        previousDay: {type: String, default: ''},
+        newDay: {type: String, default: ''},
+        previousAmount: {type: Number, default: 0},
+        newAmount: {type: Number, default: 0},
+        difference: {type: Number, default: 0},
+        refundMode: {type: String, default: ''},
+        paymentMode: {type: String, default: ''},
+        createdAt: {type: Date, default: Date.now},
+        createdBy: {
+          m_staff_id: {type: String, default: null},
+          m_staff_name: {type: String, default: null},
+          m_staff_email: {type: String, default: null},
+        },
+      },
+    ],
     createdBy: {
       m_staff_id: {type: String, default: null},
       m_staff_name: {type: String, default: null},

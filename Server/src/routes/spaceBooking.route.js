@@ -12,6 +12,9 @@ import {
   getSpaceBookingAvailability,
   getSpaceBookingById,
   updateSpaceBooking,
+  quoteSpaceReschedule,
+  rescheduleSpaceBooking,
+  receiveSpaceBookingPayment,
   deleteSpaceBooking,
 } from '../controllers/spaceBooking.controller.js';
 
@@ -42,6 +45,21 @@ router.post(
   '/',
   requirePermission(PERMISSIONS.SPACE_BOOKING_CREATE),
   createSpaceBooking,
+);
+router.get(
+  '/:id/reschedule-quote',
+  requirePermission(PERMISSIONS.SPACE_BOOKING_READ),
+  quoteSpaceReschedule,
+);
+router.post(
+  '/:id/reschedule',
+  requirePermission(PERMISSIONS.SPACE_BOOKING_UPDATE),
+  rescheduleSpaceBooking,
+);
+router.post(
+  '/:id/payments',
+  requirePermission(PERMISSIONS.SPACE_BOOKING_UPDATE),
+  receiveSpaceBookingPayment,
 );
 router.put(
   '/:id',

@@ -1,6 +1,13 @@
 import mongoose from 'mongoose';
 import SpaceBooking from '../models/spaceBooking.model.js';
 import Space from '../models/space.model.js';
+import Customer from '../models/customer.model.js';
+import Membership from '../models/membership.model.js';
+import Wallet from '../models/wallet.model.js';
+import {isCustomerMembershipExpired} from '../services/membershipEligibility.service.js';
+import {appendTransaction} from './wallet.controller.js';
+import Invoice from '../models/invoice.model.js';
+import {purgeInvoiceById} from './invoice.controller.js';
 import {
   BOOKING_TIMEZONE,
   BookingValidationError,
@@ -168,6 +175,51 @@ const formatTimeDisplay = timeStr => {
   return `${displayH}:${String(m).padStart(2, '0')} ${period}`;
 };
 
+const moneyValue = value => Math.round((Number(value) || 0) * 100) / 100;
+
+/** Booking details follow the linked invoice after a due payment is received. */
+const applyLinkedInvoicePayments = async bookings => {
+  const list = Array.isArray(bookings) ? bookings : [];
+  const ids = [];
+  const codes = [];
+  for (const booking of list) {
+    if (booking.invoiceId && mongoose.Types.ObjectId.isValid(String(booking.invoiceId))) {
+      ids.push(booking.invoiceId);
+    }
+    const code = String(booking.invoiceCode || '').trim();
+    if (code) codes.push(code);
+  }
+  if (!ids.length && !codes.length) return list;
+  const invoices = await Invoice.find({
+    $or: [
+      ...(ids.length ? [{_id: {$in: ids}}] : []),
+      ...(codes.length ? [{invoiceCode: {$in: codes}}] : []),
+    ],
+  })
+    .select('invoiceCode grandTotal pendingAmount paymentBreakdown paymentStatus mode')
+    .lean();
+  const byId = new Map(invoices.map(invoice => [String(invoice._id), invoice]));
+  const byCode = new Map(invoices.map(invoice => [String(invoice.invoiceCode || ''), invoice]));
+  for (const booking of list) {
+    const invoice =
+      byId.get(String(booking.invoiceId || '')) ||
+      byCode.get(String(booking.invoiceCode || ''));
+    if (!invoice) continue;
+    const paid = moneyValue(invoice.paymentBreakdown?.paidAmount);
+    const dueRaw = moneyValue(
+      invoice.pendingAmount ?? invoice.paymentBreakdown?.dueAmount ?? 0,
+    );
+    const due = dueRaw < 1 ? 0 : dueRaw;
+    const total = moneyValue(invoice.grandTotal || booking.grandTotal);
+    booking.paidAmount = due === 0 ? total : paid;
+    booking.dueAmount = due;
+    booking.paymentStatus = due === 0 ? 'full' : paid > 0 ? 'partial' : booking.paymentStatus || '';
+    if (total > 0) booking.grandTotal = total;
+    if (invoice.mode) booking.paymentMode = invoice.mode;
+  }
+  return list;
+};
+
 const serializeBooking = doc => {
   const plain =
     typeof doc?.toObject === 'function' ? doc.toObject() : {...doc};
@@ -200,6 +252,21 @@ const serializeBooking = doc => {
         }
       : null,
     bookingTime: `${formatTimeDisplay(plain.startTime)} - ${formatTimeDisplay(plain.endTime)}`,
+    ...settleRoundOff(plain),
+  };
+};
+
+/** A leftover under ₹1 is the bill round-off, not an open due. */
+const settleRoundOff = plain => {
+  const total = money(plain.grandTotal || plain.lineTotal || 0);
+  const paid = money(plain.paidAmount || 0);
+  const storedDue = money(plain.dueAmount || 0);
+  const remaining = storedDue > 0 ? storedDue : money(Math.max(0, total - paid));
+  if (!(remaining < 1) || !(paid > 0 || remaining === 0)) return {};
+  return {
+    dueAmount: 0,
+    paidAmount: total > 0 ? total : paid,
+    paymentStatus: 'full',
   };
 };
 
@@ -632,13 +699,15 @@ export const getSpaceBookings = async (req, res) => {
       ];
     }
 
-    const bookings = await SpaceBooking.find(query)
+    const bookings = await applyLinkedInvoicePayments(
+      await SpaceBooking.find(query)
       .populate(
         'spaceId',
         'name category day price capacity status spaceType spaceCode imageUrl',
       )
       .sort({bookingDate: -1, startTime: 1, createdAt: -1})
-      .lean();
+      .lean(),
+    );
       const totalGrandTotal = bookings.reduce(
       (sum, booking) => sum + (Number(booking.grandTotal) || 0),
       0
@@ -669,12 +738,14 @@ export const getSpaceBookingById = async (req, res) => {
       });
     }
 
-    const booking = await SpaceBooking.findById(id)
+    const [booking] = await applyLinkedInvoicePayments([
+      await SpaceBooking.findById(id)
       .populate(
         'spaceId',
         'name category day price capacity status spaceType spaceCode imageUrl',
       )
-      .lean();
+      .lean(),
+    ].filter(Boolean));
 
     if (!booking) {
       return res.status(404).json({
@@ -859,6 +930,528 @@ export const updateSpaceBooking = async (req, res) => {
   }
 };
 
+const money = value =>
+  Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+
+const spaceMembershipForPhone = async phone => {
+  const digits = String(phone || '').replace(/\D/g, '').slice(-10);
+  if (digits.length !== 10) return null;
+  const customer = await Customer.findOne({
+    $or: [
+      {mobile: digits},
+      {whatsappNumber: {$in: [digits, `+91${digits}`, `91${digits}`]}},
+    ],
+  })
+    .select('name mobile membershipType membershipPlanId membershipPurchase')
+    .lean();
+  if (!customer) return null;
+  const type = String(customer.membershipType || '').trim();
+  const empty = {
+    customerId: String(customer._id),
+    type: '',
+    label: '',
+    planId: '',
+    percent: 0,
+  };
+  if (!type || type.toLowerCase() === 'none' || (await isCustomerMembershipExpired(customer))) {
+    return empty;
+  }
+  let plan = null;
+  if (customer.membershipPlanId && mongoose.Types.ObjectId.isValid(String(customer.membershipPlanId))) {
+    plan = await Membership.findOne({_id: customer.membershipPlanId, status: 'Active'}).lean();
+  }
+  if (!plan) {
+    const pattern = new RegExp(`^${type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    plan = await Membership.findOne({
+      status: 'Active',
+      $or: [{planId: pattern}, {displayName: pattern}],
+    }).lean();
+  }
+  const limits = plan?.usageLimits;
+  const limitMap = limits && typeof limits.entries === 'function'
+    ? Object.fromEntries(limits.entries())
+    : limits || {};
+  const limitKey = Object.keys(limitMap).find(name => ['space', 'spaces'].includes(String(name).toLowerCase()));
+  const fromLimit = Number(limitMap[limitKey]?.discount) || 0;
+  const percent = fromLimit > 0
+    ? fromLimit
+    : Number(plan?.customerDisplay?.spaceDiscountPercent) || 0;
+  return {
+    customerId: String(customer._id),
+    type,
+    label: String(plan?.displayName || plan?.planId || type),
+    planId: plan?._id ? String(plan._id) : String(customer.membershipPlanId || ''),
+    percent: Math.max(0, percent),
+  };
+};
+
+const dateKeyFromInput = value => {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+};
+
+const dayTypeFromKey = dateKey => {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  const weekDay = date.getDay();
+  return weekDay === 0 || weekDay === 6 ? 'Weekend' : 'Weekday';
+};
+
+const staffActor = req => ({
+  m_staff_id: req.user?.m_staff_id || req.user?.userId || null,
+  m_staff_name: req.user?.name || null,
+  m_staff_email: req.user?.email || null,
+});
+
+const bookingAmount = booking =>
+  money(booking.grandTotal || booking.lineTotal || booking.unitPrice || 0);
+
+const paymentPosition = (grand, paid) => {
+  const safePaid = money(Math.max(0, paid));
+  const rawDue = money(Math.max(0, grand - safePaid));
+  // Nearest-rupee billing can leave under ₹1. That remainder is fully paid.
+  const due = rawDue < 1 ? 0 : rawDue;
+  const paymentStatus = due <= 0.009 ? 'full' : safePaid > 0 ? 'partial' : '';
+  return {paidAmount: due === 0 ? money(grand) : safePaid, dueAmount: due, paymentStatus};
+};
+
+const escapeName = value => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const pricedSpaceForDate = async (spaceId, wantedDay) => {
+  const current = await Space.findById(spaceId)
+    .select('name category day price spaceType spaceCode')
+    .lean();
+  if (!current) return null;
+  const wanted = wantedDay === 'Weekend' ? 'Weekend' : 'Weekday';
+  const name = String(current.name || '').trim();
+  const siblings = name
+    ? await Space.find({
+        name: {$regex: `^\\s*${escapeName(name)}\\s*$`, $options: 'i'},
+      })
+        .select('name category day price spaceType spaceCode')
+        .lean()
+    : [current];
+  const match =
+    siblings.find(row => String(row.day || '').toLowerCase() === wanted.toLowerCase()) ||
+    current;
+  const price = money(match.price);
+  return {
+    space: match,
+    dayType: wanted,
+    price: price > 0 ? price : money(current.price),
+  };
+};
+
+const loadOpenBooking = async id => {
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return {error: {status: 400, message: 'Invalid booking id.'}};
+  }
+  const booking = await SpaceBooking.findById(id);
+  if (!booking) return {error: {status: 404, message: 'Space booking not found.'}};
+  if (booking.status === 'Cancelled') {
+    return {error: {status: 400, message: 'A cancelled booking cannot be changed.'}};
+  }
+  return {booking};
+};
+
+const quoteForBooking = async (booking, {bookingDate, startTime, endTime, dayType}) => {
+  const dateKey = dateKeyFromInput(bookingDate);
+  if (!dateKey) return {error: 'A valid booking date is required.'};
+  if (!TIME_RE.test(String(startTime || '')) || !TIME_RE.test(String(endTime || ''))) {
+    return {error: 'Valid start and end times are required (HH:mm).'};
+  }
+  if (toMinutes(endTime) <= toMinutes(startTime)) {
+    return {error: 'End time must be after start time.'};
+  }
+  if (booking.dateMode === 'multiple' || booking.summarySnapshot?.isDurationPlan) {
+    return {error: 'Reschedule is available for a single date and time slot.'};
+  }
+  const requested = String(dayType || '').trim().toLowerCase();
+  const wanted = requested === 'weekend'
+    ? 'Weekend'
+    : requested === 'weekday'
+      ? 'Weekday'
+      : dayTypeFromKey(dateKey);
+  const priced = await pricedSpaceForDate(booking.spaceId, wanted);
+  if (!priced) return {error: 'Selected space was not found.'};
+  const hours = money((toMinutes(endTime) - toMinutes(startTime)) / 60);
+  const hourlyRate = priced.price > 0 ? priced.price : money(booking.unitPrice || 0);
+  const previousAmount = bookingAmount(booking);
+  const slotHours = money((toMinutes(booking.endTime) - toMinutes(booking.startTime)) / 60);
+  const currentHours = slotHours > 0 ? slotHours : money(booking.durationHours || 0);
+  const currentDayText = String(booking.spaceDay || '').trim().toLowerCase();
+  const currentDay = currentDayText.startsWith('weekend')
+    ? 'Weekend'
+    : currentDayText.startsWith('weekday')
+      ? 'Weekday'
+      : dayTypeFromKey(dateKeyFromInput(booking.bookingDate) || dateKey);
+  const sameDayAndDuration =
+    currentDay === priced.dayType && Math.abs(hours - currentHours) < 0.001;
+  const catalogueAmount = sameDayAndDuration
+    ? previousAmount
+    : hourlyRate > 0
+      ? money(hourlyRate * hours)
+      : previousAmount;
+  const membership = await spaceMembershipForPhone(booking.customerPhone);
+  const membershipPercent = membership?.percent || 0;
+  const membershipDiscount = !sameDayAndDuration && membershipPercent > 0
+    ? money((catalogueAmount * membershipPercent) / 100)
+    : 0;
+  // Same weekday or weekend and the same hours keeps the price already charged.
+  // A changed slot uses the customer's current space membership on the new price.
+  const newAmount = sameDayAndDuration
+    ? previousAmount
+    : money(Math.max(0, catalogueAmount - membershipDiscount));
+  const difference = money(newAmount - previousAmount);
+  const paid = money(booking.paidAmount || 0);
+  const nextDue = money(Math.max(0, newAmount - paid));
+  const refundable = money(Math.max(0, paid - newAmount));
+  return {
+    quote: {
+      bookingId: String(booking._id),
+      customerName: booking.customerName,
+      customerPhone: booking.customerPhone || '',
+      customerId: membership?.customerId || '',
+      membershipType: membership?.type || '',
+      membershipLabel: membership?.label || '',
+      membershipPlanId: membership?.planId || '',
+      membershipPercent,
+      membershipDiscount,
+      spaceName: booking.spaceName,
+      currentDate: booking.bookingDate,
+      currentStart: booking.startTime,
+      currentEnd: booking.endTime,
+      currentDay,
+      previousAmount,
+      paidAmount: paid,
+      newDate: dateKey,
+      newStart: startTime,
+      newEnd: endTime,
+      newDay: priced.dayType,
+      hourlyRate,
+      hours,
+      newAmount,
+      difference,
+      additionalDue: difference > 0 ? money(Math.min(difference, nextDue)) : 0,
+      pendingAfter: nextDue,
+      refundable,
+      spaceId: String(priced.space._id),
+    },
+  };
+};
+
+const applyWalletAdjustment = async ({
+  booking,
+  amount,
+  type,
+  walletType,
+  note,
+  referenceId,
+  createdBy,
+}) => {
+  const phone = String(booking.customerPhone || '').replace(/\D/g, '').slice(-10);
+  const customer = phone.length === 10
+    ? await Customer.findOne({mobile: new RegExp(`${phone}$`)})
+    : null;
+  if (!customer) {
+    throw new Error('Customer wallet was not found for this phone number.');
+  }
+  let wallet = await Wallet.findOne({customerId: customer._id});
+  if (!wallet) {
+    if (type === 'debit') throw new Error('Customer does not have a wallet balance.');
+    wallet = await Wallet.create({
+      customerId: customer._id,
+      customerName: customer.name || booking.customerName,
+      customerPhone: customer.mobile || booking.customerPhone,
+      transactions: [],
+    });
+  }
+  const duplicate = (wallet.transactions || []).some(
+    tx => String(tx.referenceId || '') === referenceId,
+  );
+  if (duplicate) return;
+  await appendTransaction(wallet, {
+    type,
+    amount,
+    note,
+    referenceType: 'SpaceBooking',
+    referenceId,
+    walletType: walletType || 'nonWithdrawable',
+    createdBy,
+  });
+};
+
+const reloadBooking = async id => {
+  const populated = await SpaceBooking.findById(id)
+    .populate(
+      'spaceId',
+      'name category day price capacity status spaceType spaceCode imageUrl',
+    )
+    .lean();
+  return serializeBooking(populated);
+};
+
+export const quoteSpaceReschedule = async (req, res) => {
+  try {
+    const loaded = await loadOpenBooking(req.params.id);
+    if (loaded.error) {
+      return res.status(loaded.error.status).json({success: false, message: loaded.error.message});
+    }
+    const result = await quoteForBooking(loaded.booking, req.query);
+    if (result.error) return res.status(400).json({success: false, message: result.error});
+    return res.status(200).json({success: true, quote: result.quote});
+  } catch (error) {
+    console.error('quoteSpaceReschedule error:', error);
+    return res.status(500).json({success: false, message: 'Failed to calculate the reschedule.'});
+  }
+};
+
+export const rescheduleSpaceBooking = async (req, res) => {
+  try {
+    const loaded = await loadOpenBooking(req.params.id);
+    if (loaded.error) {
+      return res.status(loaded.error.status).json({success: false, message: loaded.error.message});
+    }
+    const booking = loaded.booking;
+    const result = await quoteForBooking(booking, req.body || {});
+    if (result.error) return res.status(400).json({success: false, message: result.error});
+    const quote = result.quote;
+    const actor = staffActor(req);
+    const referenceId = `space-reschedule:${booking._id}:${quote.newDate}:${quote.newStart}:${quote.newAmount}`;
+    const already = (booking.payments || []).some(row => row.referenceId === referenceId);
+    if (already) {
+      return res.status(200).json({
+        success: true,
+        message: 'This reschedule was already saved.',
+        booking: await reloadBooking(booking._id),
+      });
+    }
+
+    const paymentRow = req.body?.payment || null;
+    const refundRow = req.body?.refund || null;
+    if (quote.refundable > 0 && !['Wallet', 'UPI', 'Cash'].includes(String(refundRow?.mode || '').trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Choose Wallet, UPI, or Cash for the refund.',
+      });
+    }
+    if (quote.additionalDue > 0) {
+      const mode = String(paymentRow?.mode || '').trim();
+      const amount = money(paymentRow?.amount);
+      if (!['Cash', 'UPI', 'Wallet', 'Card'].includes(mode)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Choose UPI, Cash, Wallet, or Card for the additional amount.',
+        });
+      }
+      if (Math.abs(amount - quote.additionalDue) > 0.009) {
+        return res.status(400).json({
+          success: false,
+          message: 'Collect the full additional amount before rescheduling.',
+        });
+      }
+    }
+
+    const preview = {
+      ...booking.toObject(),
+      spaceId: quote.spaceId,
+      bookingDate: new Date(`${quote.newDate}T00:00:00`),
+      startTime: quote.newStart,
+      endTime: quote.newEnd,
+      dateMode: 'single',
+      multiDateSlots: [],
+    };
+    const group = await resolveSpaceGroup(quote.spaceId);
+    const {intervals, errors} = buildBookingIntervals(preview);
+    if (!group || errors.length || !intervals.length) {
+      return res.status(400).json({
+        success: false,
+        message: errors[0] || 'Selected space was not found.',
+      });
+    }
+
+    await validateAndPersistSchedule({
+      group,
+      intervals,
+      excludeId: booking._id,
+      persist: async () => {
+    let paid = money(booking.paidAmount || 0);
+    if (!Array.isArray(booking.payments)) booking.payments = [];
+    if (!Array.isArray(booking.reschedules)) booking.reschedules = [];
+
+    if (quote.refundable > 0) {
+      const mode = String(refundRow?.mode || '').trim();
+      if (mode === 'Wallet') {
+        await applyWalletAdjustment({
+          booking,
+          amount: quote.refundable,
+          type: 'credit',
+          walletType: refundRow.walletType || 'nonWithdrawable',
+          note: `Refund adjustment for Space Booking Reschedule - ${booking._id}`,
+          referenceId,
+          createdBy: actor,
+        });
+      }
+      booking.payments.push({
+        kind: 'refund',
+        amount: quote.refundable,
+        mode,
+        walletType: mode === 'Wallet' ? refundRow.walletType || 'nonWithdrawable' : '',
+        note: `Refund adjustment for Space Booking Reschedule - ${booking._id}`,
+        referenceId,
+        createdBy: actor,
+      });
+      paid = money(paid - quote.refundable);
+    }
+
+    if (quote.additionalDue > 0 && paymentRow && Number(paymentRow.amount) > 0) {
+      const collect = money(Math.min(Number(paymentRow.amount), quote.pendingAfter));
+      const mode = String(paymentRow.mode || '').trim();
+      const payRef = `${referenceId}:pay`;
+      if (mode === 'Wallet') {
+        await applyWalletAdjustment({
+          booking,
+          amount: collect,
+          type: 'debit',
+          walletType: paymentRow.walletType || 'nonWithdrawable',
+          note: `Additional payment for Space Booking Reschedule - ${booking._id}`,
+          referenceId: payRef,
+          createdBy: actor,
+        });
+      }
+      booking.payments.push({
+        kind: 'payment',
+        amount: collect,
+        mode,
+        walletType: mode === 'Wallet' ? paymentRow.walletType || 'nonWithdrawable' : '',
+        note: `Additional payment for Space Booking Reschedule - ${booking._id}`,
+        referenceId: payRef,
+        createdBy: actor,
+      });
+      paid = money(paid + collect);
+    }
+
+    const position = paymentPosition(quote.newAmount, paid);
+    if (!booking.originalAmount) booking.originalAmount = quote.previousAmount;
+    booking.reschedules.push({
+      previousDate: booking.bookingDate,
+      newDate: new Date(`${quote.newDate}T00:00:00`),
+      previousStart: booking.startTime,
+      previousEnd: booking.endTime,
+      newStart: quote.newStart,
+      newEnd: quote.newEnd,
+      previousDay: quote.currentDay,
+      newDay: quote.newDay,
+      previousAmount: quote.previousAmount,
+      newAmount: quote.newAmount,
+      difference: quote.difference,
+      refundMode: quote.refundable > 0 ? String(refundRow?.mode || '') : '',
+      paymentMode: quote.additionalDue > 0 ? String(paymentRow?.mode || '') : '',
+      createdBy: actor,
+    });
+    booking.bookingDate = new Date(`${quote.newDate}T00:00:00`);
+    booking.startTime = quote.newStart;
+    booking.endTime = quote.newEnd;
+    booking.spaceId = quote.spaceId;
+    booking.spaceDay = quote.newDay;
+    booking.unitPrice = quote.hourlyRate;
+    booking.durationHours = quote.hours;
+    booking.lineTotal = quote.newAmount;
+    booking.grandTotal = quote.newAmount;
+    booking.paidAmount = position.paidAmount;
+    booking.dueAmount = position.dueAmount;
+    booking.paymentStatus = position.paymentStatus;
+    if (booking.status !== 'Draft') {
+      booking.status = computeBookingStatus(
+        booking.bookingDate,
+        booking.startTime,
+        booking.endTime,
+        booking.status,
+      );
+    }
+
+        await booking.save();
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Booking rescheduled.',
+      booking: await reloadBooking(booking._id),
+    });
+  } catch (error) {
+    if (error instanceof BookingValidationError) return sendBookingValidationError(res, error);
+    console.error('rescheduleSpaceBooking error:', error);
+    return res.status(400).json({
+      success: false,
+      message: error.message || 'Failed to reschedule booking.',
+    });
+  }
+};
+
+export const receiveSpaceBookingPayment = async (req, res) => {
+  try {
+    const loaded = await loadOpenBooking(req.params.id);
+    if (loaded.error) {
+      return res.status(loaded.error.status).json({success: false, message: loaded.error.message});
+    }
+    const booking = loaded.booking;
+    const due = money(booking.dueAmount || Math.max(0, bookingAmount(booking) - Number(booking.paidAmount || 0)));
+    if (due <= 0.009) {
+      return res.status(400).json({success: false, message: 'This booking has no pending amount.'});
+    }
+    const amount = money(req.body?.amount);
+    const mode = String(req.body?.mode || '').trim();
+    if (!(amount > 0) || amount - due > 0.009) {
+      return res.status(400).json({success: false, message: `Enter an amount up to ₹${due.toFixed(2)}.`});
+    }
+    if (!['Cash', 'UPI', 'Wallet', 'Card'].includes(mode)) {
+      return res.status(400).json({success: false, message: 'Choose Cash, UPI, or Wallet.'});
+    }
+    const referenceId = `space-payment:${booking._id}:${Date.now()}`;
+    const actor = staffActor(req);
+    if (mode === 'Wallet') {
+      await applyWalletAdjustment({
+        booking,
+        amount,
+        type: 'debit',
+        walletType: req.body?.walletType || 'nonWithdrawable',
+        note: `Pending payment for Space Booking - ${booking._id}`,
+        referenceId,
+        createdBy: actor,
+      });
+    }
+    if (!Array.isArray(booking.payments)) booking.payments = [];
+    booking.payments.push({
+      kind: 'payment',
+      amount,
+      mode,
+      walletType: mode === 'Wallet' ? req.body?.walletType || 'nonWithdrawable' : '',
+      note: `Pending payment for Space Booking - ${booking._id}`,
+      referenceId,
+      createdBy: actor,
+    });
+    const position = paymentPosition(bookingAmount(booking), Number(booking.paidAmount || 0) + amount);
+    booking.paidAmount = position.paidAmount;
+    booking.dueAmount = position.dueAmount;
+    booking.paymentStatus = position.paymentStatus;
+    booking.paymentMode = mode;
+    await booking.save();
+    return res.status(200).json({
+      success: true,
+      message: 'Payment recorded.',
+      booking: await reloadBooking(booking._id),
+    });
+  } catch (error) {
+    console.error('receiveSpaceBookingPayment error:', error);
+    return res.status(400).json({
+      success: false,
+      message: error.message || 'Failed to record payment.',
+    });
+  }
+};
+
 export const deleteSpaceBooking = async (req, res) => {
   try {
     const {id} = req.params;
@@ -869,7 +1462,7 @@ export const deleteSpaceBooking = async (req, res) => {
       });
     }
 
-    const booking = await SpaceBooking.findByIdAndDelete(id);
+    const booking = await SpaceBooking.findById(id);
     if (!booking) {
       return res.status(404).json({
         success: false,
@@ -877,9 +1470,28 @@ export const deleteSpaceBooking = async (req, res) => {
       });
     }
 
+    const invoiceIds = new Set();
+    if (booking.invoiceId && mongoose.Types.ObjectId.isValid(String(booking.invoiceId))) {
+      invoiceIds.add(String(booking.invoiceId));
+    }
+    const code = String(booking.invoiceCode || '').trim();
+    if (code) {
+      const linked = await Invoice.findOne({invoiceCode: code}).select('_id').lean();
+      if (linked?._id) invoiceIds.add(String(linked._id));
+    }
+
+    await SpaceBooking.findByIdAndDelete(id);
+    for (const invoiceId of invoiceIds) {
+      try {
+        await purgeInvoiceById(invoiceId, req);
+      } catch (invoiceError) {
+        console.error('deleteSpaceBooking invoice cleanup error:', invoiceError);
+      }
+    }
+
     return res.status(200).json({
       success: true,
-      message: 'Space booking deleted successfully.',
+      message: 'Space booking and its invoice were deleted.',
     });
   } catch (error) {
     console.error('deleteSpaceBooking error:', error);

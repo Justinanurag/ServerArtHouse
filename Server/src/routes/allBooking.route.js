@@ -10,6 +10,7 @@ import {
   createAllBooking,
   deleteAllBooking,
   getAllBookings,
+  receiveAllBookingPayment,
   updateAllBooking,
 } from '../controllers/allbooking.controller.js';
 
@@ -23,6 +24,11 @@ router.get(
   getAllBookings,
 );
 router.post('/', requirePermission(PERMISSIONS.SPACE_BOOKING_CREATE), createAllBooking);
+router.post(
+  '/:id/payments',
+  requirePermission(PERMISSIONS.SPACE_BOOKING_UPDATE),
+  receiveAllBookingPayment,
+);
 router.patch('/:id', requirePermission(PERMISSIONS.SPACE_BOOKING_UPDATE), updateAllBooking);
 router.delete('/:id', requirePermission(PERMISSIONS.SPACE_BOOKING_DELETE), deleteAllBooking);
 

@@ -57,6 +57,15 @@ const allBookingSchema = new mongoose.Schema(
     },
     notes: {type: String, default: '', trim: true},
     paymentStatus: {type: String, default: '', trim: true},
+    payments: [
+      {
+        amount: {type: Number, default: 0, min: 0},
+        mode: {type: String, default: '', trim: true},
+        note: {type: String, default: '', trim: true},
+        referenceId: {type: String, default: '', trim: true},
+        createdAt: {type: Date, default: Date.now},
+      },
+    ],
     createdBy: {
       m_staff_id: {type: String, default: null},
       m_staff_name: {type: String, default: null},

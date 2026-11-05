@@ -1221,26 +1221,16 @@ const getInvoice = async (req, res) => {
   }
 };
 
-const deleteInvoice = async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log(id);
-
-    // check if id exists
-    if (!id) {
-      return res.status(400).json({
-        success: false,
-        message: "Invoice ID is required",
-      });
+/** Removes an invoice and reverses wallet, cashback, coupon, and CSP effects. */
+export async function purgeInvoiceById(id, req) {
+    if (!id || !mongoose.Types.ObjectId.isValid(String(id))) {
+      return { ok: false, status: 400, message: "Invoice ID is required" };
     }
 
     const invoice = await Invoice.findById(id);
 
     if (!invoice) {
-      return res.status(404).json({
-        success: false,
-        message: "Invoice not found",
-      });
+      return { ok: false, status: 404, message: "Invoice not found" };
     }
 
     const walletAmount = Number(invoice.paymentBreakdown?.wallet ?? 0);
@@ -1296,12 +1286,21 @@ const deleteInvoice = async (req, res) => {
 
     const deletedInvoice = await Invoice.findOneAndDelete({ _id: id });
 
+    return { ok: true, status: 200, message: "Invoice deleted successfully", deletedInvoice };
+
+}
+
+const deleteInvoice = async (req, res) => {
+  try {
+    const result = await purgeInvoiceById(req.params.id, req);
+    if (!result.ok) {
+      return res.status(result.status).json({ success: false, message: result.message });
+    }
     return res.status(200).json({
       success: true,
-      message: "Invoice deleted successfully",
-      deletedInvoice,
+      message: result.message,
+      deletedInvoice: result.deletedInvoice,
     });
-
   } catch (error) {
     console.error("deleteInvoice error:", error);
     return res.status(500).json({
@@ -1589,6 +1588,28 @@ const updateInvoice = async (req, res) => {
       updateQuery,
       { new: true }
     );
+
+    if (newPayment && updatedInvoice) {
+      const paid = Number(updatedInvoice.paymentBreakdown?.paidAmount || 0);
+      const dueRaw = Number(
+        updatedInvoice.pendingAmount ?? updatedInvoice.paymentBreakdown?.dueAmount ?? 0,
+      );
+      const due = dueRaw < 1 ? 0 : dueRaw;
+      const total = Number(updatedInvoice.grandTotal || 0);
+      const invoiceMatch = [{invoiceId: updatedInvoice._id}];
+      if (updatedInvoice.invoiceCode) invoiceMatch.push({invoiceCode: updatedInvoice.invoiceCode});
+      await SpaceBooking.updateMany(
+        {$or: invoiceMatch},
+        {
+          $set: {
+            paidAmount: due === 0 ? total : paid,
+            dueAmount: due,
+            paymentStatus: due === 0 ? 'full' : paid > 0 ? 'partial' : '',
+            paymentMode: updatedInvoice.mode || '',
+          },
+        },
+      );
+    }
 
     if (existingInvoice.status !== 'cancelled' && previousCouponCode && previousCouponCode !== nextCouponCode) {
       await applyCouponUsageDelta({ code: previousCouponCode, delta: -1 });
