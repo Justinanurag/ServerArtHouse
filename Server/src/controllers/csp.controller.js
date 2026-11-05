@@ -8,6 +8,7 @@ import Product from '../models/product.model.js';
 import Wallet from '../models/wallet.model.js';
 import WalletWithdrawal from '../models/walletWithdrawal.model.js';
 import {resolveTwoBuckets} from '../utils/walletBuckets.js';
+import {attachMembershipExpiry} from '../services/membershipEligibility.service.js';
 
 const getsailorSharePercent = () => {
   const n = Number(process.env.CSP_sailor_SHARE_PERCENT ?? 70);
@@ -102,7 +103,7 @@ const populateEnrollment = query =>
   query
     .populate(
       'customerId',
-      'name mobile email walletAmount membershipType withdrawable affiliateBalance nonWithdrawable cashbackBalance closingBalance',
+      'name mobile email walletAmount membershipType membershipPlanId membershipPurchase withdrawable affiliateBalance nonWithdrawable cashbackBalance closingBalance',
     )
     .populate(
       'vendorId',
@@ -160,11 +161,52 @@ export const getCSP = async (req, res) => {
       wallets.map(w => [String(w.customerId), w]),
     );
 
+    const enrollmentIds = rows.map(row => row._id).filter(Boolean);
+    const [settlements, withdrawals] = await Promise.all([
+      enrollmentIds.length
+        ? CspSettlement.find({
+            status: {$ne: 'reversed'},
+            'lines.cspEnrollmentId': {$in: enrollmentIds},
+          })
+            .select('lines')
+            .lean()
+        : [],
+      customerIds.length
+        ? WalletWithdrawal.find({customer: {$in: customerIds}})
+            .select('customer amount status')
+            .lean()
+        : [],
+    ]);
+
+    const salesByEnrollment = new Map();
+    for (const settlement of settlements) {
+      for (const line of settlement.lines || []) {
+        const id = String(line.cspEnrollmentId || '');
+        if (!id) continue;
+        const current = salesByEnrollment.get(id) || {salesAmount: 0};
+        current.salesAmount += Number(line.lineBaseAmount) || 0;
+        salesByEnrollment.set(id, current);
+      }
+    }
+
+    const payoutByCustomer = new Map();
+    const paidStatuses = new Set(['paid']);
+    for (const withdrawal of withdrawals) {
+      if (!paidStatuses.has(withdrawal.status)) continue;
+      const id = String(withdrawal.customer || '');
+      payoutByCustomer.set(
+        id,
+        (payoutByCustomer.get(id) || 0) + (Number(withdrawal.amount) || 0),
+      );
+    }
+
     const enrollments = rows.map(row => {
       const dto = toEnrollmentDto(row);
       const customerId = dto.customerId ? String(dto.customerId) : '';
       const wallet = customerId ? walletMap.get(customerId) : null;
       const buckets = resolveTwoBuckets(wallet, dto.customer);
+      const sales = salesByEnrollment.get(String(row._id)) || {salesAmount: 0};
+      const payoutAmount = customerId ? payoutByCustomer.get(customerId) || 0 : 0;
       return {
         ...dto,
         withdrawable: buckets.withdrawable,
@@ -172,8 +214,14 @@ export const getCSP = async (req, res) => {
         affiliateBalance: buckets.withdrawable,
         nonWithdrawable: buckets.nonWithdrawable,
         walletAmount: buckets.total,
+        salesAmount: Math.round(sales.salesAmount * 100) / 100,
+        payoutAmount: Math.round(payoutAmount * 100) / 100,
       };
     });
+
+    await attachMembershipExpiry(
+      enrollments.map(row => row.customer).filter(Boolean),
+    );
 
     return res.status(200).json({
       success: true,
@@ -813,6 +861,8 @@ const collectCspPartnerDetails = async (enrollment, {activityLimit = 8} = {}) =>
           ? application.categories.filter(Boolean)
           : [],
         membershipType: textOrEmpty(dto.customer?.membershipType),
+        membershipEndDate: dto.customer?.membershipEndDate || null,
+        membershipExpired: Boolean(dto.customer?.membershipExpired),
         sailorSharePercent:
           dto.sailorSharePercent == null ? null : Number(dto.sailorSharePercent),
         platformSharePercent:

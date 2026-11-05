@@ -476,7 +476,6 @@ export const getAllBookings = async (req, res) => {
     }
 
     const query = {};
-    if (status !== 'All' && STATUSES.has(status)) query.status = status;
     if (includes === 'Space') query.spaceId = {$ne: null};
     if (includes === 'Services') query['services.0'] = {$exists: true};
     if (includes === 'Food') query['foods.0'] = {$exists: true};
@@ -515,13 +514,39 @@ export const getAllBookings = async (req, res) => {
           .includes(search);
       });
 
-    const total = rows.length;
+    const countStatus = name => rows.filter(row => row.status === name).length;
+    const money = rows.reduce(
+      (sum, row) => {
+        if (row.status === 'Cancelled') return sum;
+        const due = Number(row.dueAmount) || 0;
+        sum.paid += Number(row.paidAmount) || 0;
+        sum.pending += due < 1 ? 0 : due;
+        return sum;
+      },
+      {paid: 0, pending: 0},
+    );
+    const summary = {
+      total: rows.length,
+      ongoing: countStatus('Ongoing'),
+      upcoming: countStatus('Upcoming'),
+      draft: countStatus('Draft'),
+      expired: countStatus('Expired'),
+      cancelled: countStatus('Cancelled'),
+      paid: roundMoney(money.paid),
+      pending: roundMoney(money.pending),
+    };
+    const visible =
+      status !== 'All' && STATUSES.has(status)
+        ? rows.filter(row => row.status === status)
+        : rows;
+    const total = visible.length;
     const pages = Math.max(1, Math.ceil(total / limit));
     const safePage = Math.min(page, pages);
     const start = (safePage - 1) * limit;
     return res.status(200).json({
       success: true,
-      bookings: rows.slice(start, start + limit),
+      bookings: visible.slice(start, start + limit),
+      summary,
       pagination: {page: safePage, limit, total, pages},
     });
   } catch (error) {
