@@ -6,6 +6,11 @@ import {fileURLToPath} from 'url';
 import Food from '../models/food.model.js';
 import FoodOffer from '../models/foodOffer.model.js';
 import {uploadOnCloudinary} from '../utils/cloudinary.js';
+import {
+  attachFoodStock,
+  deactivateFoodInventoryProduct,
+  syncFoodInventoryProduct,
+} from '../services/foodInventory.service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +57,11 @@ const buildFoodPayload = (body = {}, imageUrl) => {
     unit: String(body.unit ?? 'Plate').trim() || 'Plate',
     isPackaged:
       body.isPackaged === true || body.isPackaged === 'true' || body.isPackaged === '1',
+    manageInventory:
+      body.manageInventory === true ||
+      body.manageInventory === 'true' ||
+      body.manageInventory === '1' ||
+      body.manageInventory === 'Yes',
     description: String(body.description ?? '').trim(),
     isVeg: body.isVeg === true || body.isVeg === 'true' || body.isVeg === '1',
     // Available → Active, Not Available → Inactive
@@ -107,19 +117,28 @@ export const createFood = async (req, res) => {
       m_staff_email: req.user?.email ?? null,
     };
 
+    if (payload.manageInventory) payload.inventorySince = new Date();
+
     const food = await Food.create({
       ...payload,
       createdBy: payload.createdBy ?? staffFromReq,
     });
+    try {
+      await syncFoodInventoryProduct(food);
+    } catch (syncError) {
+      await Food.findByIdAndDelete(food._id);
+      throw syncError;
+    }
+    const [saved] = await attachFoodStock([await Food.findById(food._id)]);
 
     return res.status(201).json({
       success: true,
       message: 'Food created successfully.',
-      food,
+      food: saved,
     });
   } catch (error) {
     console.error('createFood error:', error);
-    return res.status(500).json({
+    return res.status(error.status || 500).json({
       success: false,
       message: error.message || 'Failed to create food.',
     });
@@ -147,7 +166,9 @@ export const getFoods = async (req, res) => {
       ];
     }
 
-    const foods = await Food.find(query).sort({createdAt: -1});
+    const foods = await attachFoodStock(
+      await Food.find(query).sort({createdAt: -1}).lean(),
+    );
     return res.status(200).json({
       success: true,
       message: 'Foods fetched successfully.',
@@ -168,11 +189,12 @@ export const getFoodById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({success: false, message: 'Invalid food id.'});
     }
-    const food = await Food.findById(id);
+    const food = await Food.findById(id).lean();
     if (!food) {
       return res.status(404).json({success: false, message: 'Food not found.'});
     }
-    return res.status(200).json({success: true, food});
+    const [withStock] = await attachFoodStock([food]);
+    return res.status(200).json({success: true, food: withStock});
   } catch (error) {
     console.error('getFoodById error:', error);
     return res.status(500).json({success: false, message: 'Failed to fetch food.'});
@@ -193,23 +215,35 @@ export const updateFood = async (req, res) => {
       return res.status(400).json({success: false, message: 'Food name is required.'});
     }
 
+    const existing = await Food.findById(id);
+    if (!existing) {
+      return res.status(404).json({success: false, message: 'Food not found.'});
+    }
+    if (payload.manageInventory && !existing.inventorySince) {
+      payload.inventorySince = new Date();
+    } else if (existing.inventorySince) {
+      payload.inventorySince = existing.inventorySince;
+    }
+
     const food = await Food.findByIdAndUpdate(id, payload, {
       new: true,
       runValidators: true,
     });
 
-    if (!food) {
-      return res.status(404).json({success: false, message: 'Food not found.'});
-    }
+    await syncFoodInventoryProduct(food);
+    const [saved] = await attachFoodStock([await Food.findById(food._id)]);
 
     return res.status(200).json({
       success: true,
       message: 'Food updated successfully.',
-      food,
+      food: saved,
     });
   } catch (error) {
     console.error('updateFood error:', error);
-    return res.status(500).json({success: false, message: 'Failed to update food.'});
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Failed to update food.',
+    });
   }
 };
 
@@ -223,6 +257,7 @@ export const deleteFood = async (req, res) => {
     if (!food) {
       return res.status(404).json({success: false, message: 'Food not found.'});
     }
+    await deactivateFoodInventoryProduct(food._id);
     return res.status(200).json({
       success: true,
       message: 'Food deleted successfully.',

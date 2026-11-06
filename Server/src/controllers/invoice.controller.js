@@ -3,6 +3,7 @@ import Counter from '../models/counter.model.js';
 import Customer from '../models/customer.model.js';
 import Coupon from '../models/coupon.model.js';
 import Invoice from '../models/invoice.model.js';
+import Product from '../models/product.model.js';
 import SpaceBooking from '../models/spaceBooking.model.js';
 import Wallet from '../models/wallet.model.js';
 import {
@@ -11,6 +12,10 @@ import {
   reverseCspPaymentSplit,
 } from '../services/cspPaymentSplit.service.js';
 import { computeStockByProductNames } from '../utils/inventoryStock.utils.js';
+import {
+  insufficientFoodStockMessage,
+  managedFoodNameSet,
+} from '../services/foodInventory.service.js';
 import {
   appendTransaction,
   debitWalletForPurchase,
@@ -64,8 +69,14 @@ const assertSufficientPurchaseStock = async ({
   items,
   excludeInvoiceId = null,
 }) => {
+  const managedFoods = await managedFoodNameSet();
+  const tracksStock = item => {
+    const name = String(item?.productName ?? '').trim().toLowerCase();
+    if (name && managedFoods.has(name)) return true;
+    return isInventoryTrackedCategory(item?.category);
+  };
   const requestNames = (items || [])
-    .filter(item => isInventoryTrackedCategory(item.category))
+    .filter(tracksStock)
     .map(item => String(item.productName ?? '').trim())
     .filter(Boolean);
 
@@ -78,7 +89,7 @@ const assertSufficientPurchaseStock = async ({
   const requestedQtyMap = new Map();
 
   for (const item of items) {
-    if (!isInventoryTrackedCategory(item.category)) continue;
+    if (!tracksStock(item)) continue;
     const name = String(item.productName ?? '').trim();
     const qty = Number(item.qty ?? 0);
     requestedQtyMap.set(name, (requestedQtyMap.get(name) ?? 0) + qty);
@@ -87,9 +98,12 @@ const assertSufficientPurchaseStock = async ({
   for (const [name, requestedQty] of requestedQtyMap.entries()) {
     const availableQty = Number(stockMap.get(name) ?? 0);
     if (requestedQty > availableQty) {
+      const managed = managedFoods.has(name.toLowerCase());
       return {
         success: false,
-        message: `Insufficient stock for ${name}. Available from purchases: ${availableQty}, requested: ${requestedQty}.`,
+        message: managed
+          ? insufficientFoodStockMessage(name)
+          : `Insufficient stock for ${name}. Available from purchases: ${availableQty}, requested: ${requestedQty}.`,
       };
     }
   }
@@ -546,6 +560,53 @@ const applyCouponUsageDelta = async ({ code, delta }) => {
 };
 
 /** Keep product vs membership split on the line. Membership is already inside `discount`. */
+const productNamesSkippingMembership = async () => {
+  const products = await Product.find({
+    applyMembershipDiscount: false,
+    itemType: {$ne: 'service'},
+    type: {$ne: 'service'},
+  })
+    .select('productName variants.name')
+    .lean();
+  const names = new Set();
+  for (const product of products) {
+    const parent = String(product.productName || '').trim().toLowerCase();
+    if (!parent) continue;
+    names.add(parent);
+    for (const variant of product.variants || []) {
+      const variantName = String(variant?.name || '').trim();
+      if (variantName) names.add(`${parent} - ${variantName}`.toLowerCase());
+    }
+  }
+  return names;
+};
+
+const namesWithoutMembershipDiscount = async () => {
+  const [foods, products] = await Promise.all([
+    managedFoodNameSet(),
+    productNamesSkippingMembership(),
+  ]);
+  return new Set([...foods, ...products]);
+};
+
+const withoutInventoryFoodMembership = (items, managedNames) => {
+  if (!managedNames?.size) return items;
+  return items.map(item => {
+    const key = String(item.productName || '').trim().toLowerCase();
+    if (!managedNames.has(key)) return item;
+    const productDiscount = Math.max(0, Number(item.productDiscountAmount) || 0);
+    const discount = Math.min(Math.max(0, Number(item.discount) || 0), productDiscount);
+    const qty = Number(item.qty) || 0;
+    const unitPrice = Number(item.unitPrice) || 0;
+    return {
+      ...item,
+      discount,
+      membershipDiscountAmount: 0,
+      lineTotal: Math.max(0, qty * unitPrice - discount),
+    };
+  });
+};
+
 const normalizeInvoiceItem = (item, previous = {}) => {
   const qty = Number(item.qty);
   const unitPrice = Number(item.unitPrice);
@@ -668,8 +729,9 @@ const createInvoice = async (req, res) => {
       });
     }
 
-    const normalizedItems = items.map(item =>
-      normalizeInvoiceItem(item),
+    const normalizedItems = withoutInventoryFoodMembership(
+      items.map(item => normalizeInvoiceItem(item)),
+      await namesWithoutMembershipDiscount(),
     );
 
     if (normalizedItems.some(item => !item.productName || item.qty <= 0 || item.unitPrice < 0 || item.discount < 0 || item.lineTotal < 0)) {
@@ -1386,10 +1448,13 @@ const updateInvoice = async (req, res) => {
     let normalizedItems;
     if (items && Array.isArray(items)) {
       const existingItems = Array.isArray(existingInvoice.items) ? existingInvoice.items : [];
-      normalizedItems = items.map((item, idx) => {
-        const previous = existingItems[idx] || {};
-        return normalizeInvoiceItem(item, previous);
-      });
+      normalizedItems = withoutInventoryFoodMembership(
+        items.map((item, idx) => {
+          const previous = existingItems[idx] || {};
+          return normalizeInvoiceItem(item, previous);
+        }),
+        await namesWithoutMembershipDiscount(),
+      );
     }
 
     if (normalizedItems && normalizedItems.length) {

@@ -40,6 +40,23 @@ const foodSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    /** Yes = stock comes from purchases and the item is a product. No = current food flow. */
+    manageInventory: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    /** First time inventory was turned on. Earlier food bills do not consume this stock. */
+    inventorySince: {
+      type: Date,
+      default: null,
+    },
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product',
+      default: null,
+      index: true,
+    },
     description: {
       type: String,
       default: '',

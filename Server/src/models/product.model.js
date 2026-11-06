@@ -131,6 +131,23 @@ const productSchema = new mongoose.Schema(
       ref: 'Vendor',
       default: null,
     },
+    /** Set when this product was created from an inventory-managed food item. */
+    foodId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Food',
+      default: null,
+      index: true,
+    },
+    /** False hides a food-linked product after Manage Inventory is turned off. */
+    foodInventoryActive: {
+      type: Boolean,
+      default: true,
+    },
+    /** Off skips membership discount at checkout. Missing or true keeps the discount. */
+    applyMembershipDiscount: {
+      type: Boolean,
+      default: true,
+    },
   },
   { timestamps: true }
 );

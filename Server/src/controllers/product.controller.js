@@ -257,8 +257,12 @@ export const createProduct = async (req, res) => {
       variants,
       isCsp,
       cspEnrollmentId,
+      applyMembershipDiscount,
     } = req.body;
     console.log("product controller",req.body);
+    const membershipDiscountOn = !['false', '0', 'no', 'off'].includes(
+      String(applyMembershipDiscount ?? 'true').trim().toLowerCase(),
+    );
 
     // Product routes always create products; Services routes set forceItemType='service'
     const forcedType = String(req.forceItemType || '').trim().toLowerCase();
@@ -400,6 +404,7 @@ export const createProduct = async (req, res) => {
           existingDup.description = description || existingDup.description;
           existingDup.discountType = discountType || existingDup.discountType;
           existingDup.discountValue = parsedDiscountValue;
+          existingDup.applyMembershipDiscount = membershipDiscountOn;
           existingDup.variants = parsedVariants;
           if (imageUrls.length) {
             existingDup.images = imageUrls;
@@ -447,6 +452,7 @@ export const createProduct = async (req, res) => {
       description: description || "",
       discountType: discountType || "flat",
       discountValue: parsedDiscountValue,
+      applyMembershipDiscount: itemType === 'product' ? membershipDiscountOn : true,
       variants: itemType === "product" ? parsedVariants : [],
       images: imageUrls,
       imageUrl: imageUrls[0] || null,
@@ -1012,6 +1018,7 @@ const PRODUCT_LIST_SELECT = [
   'imageUrl',
   'isCsp',
   'cspEnrollmentId',
+  'applyMembershipDiscount',
   'createdAt',
   'updatedAt',
 ].join(' ');
@@ -1046,7 +1053,7 @@ export const getProducts = async (req, res) => {
       cspEnrollmentId: cspEnrollmentIdRaw,
     } = req.query;
 
-    const clauses = [];
+    const clauses = [{ foodInventoryActive: { $ne: false } }];
 
     // Filter by CSP enrollment ID (shows all products for a CSP owner)
     const cspEnrollmentIdFilter = String(cspEnrollmentIdRaw || '').trim();
@@ -1240,6 +1247,7 @@ const CUSTOMER_PRODUCT_SELECT =
 const customerCatalogueFilter = () => ({
   type: {$ne: 'service'},
   itemType: {$ne: 'service'},
+  foodId: null,
 });
 
 /** Public catalogue shape. Omits cost, barcodes, stock counts, and staff or customer ids. */
@@ -1448,6 +1456,7 @@ export const updateProduct = async (req, res) => {
       variants,
       isCsp,
       cspEnrollmentId,
+      applyMembershipDiscount,
     } = req.body;
 
     // find existing product
@@ -1548,6 +1557,11 @@ export const updateProduct = async (req, res) => {
     existingProduct.discountType = discountType ?? existingProduct.discountType;
     existingProduct.discountValue =
       discountValue !== undefined ? Number(discountValue) : existingProduct.discountValue;
+    if (applyMembershipDiscount !== undefined && nextType !== 'service') {
+      existingProduct.applyMembershipDiscount = !['false', '0', 'no', 'off'].includes(
+        String(applyMembershipDiscount).trim().toLowerCase(),
+      );
+    }
 
     if (nextType === "service") {
       existingProduct.stockQty = 0;

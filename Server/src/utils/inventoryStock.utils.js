@@ -3,6 +3,7 @@ import Purchase from "../models/purchase.model.js";
 import Invoice from "../models/invoice.model.js";
 import ReturnSale from "../models/returnSale.model.js";
 import PurchaseReturn from "../models/purchaseReturn.model.js";
+import Food from "../models/food.model.js";
 
 const normalizeName = (value) => String(value ?? "").trim();
 const nameKey = (value) => normalizeName(value).toLowerCase();
@@ -55,6 +56,29 @@ export const getStockQtyForName = (stockMap, name) => {
 export const sumStockForNames = (stockMap, names = []) =>
   names.reduce((sum, name) => sum + getStockQtyForName(stockMap, name), 0);
 
+/** Lowercase food name → date when inventory tracking started. */
+export const getManagedFoodSaleCutoff = async () => {
+  const foods = await Food.find({ manageInventory: true })
+    .select("name inventorySince")
+    .lean();
+  const cutoff = new Map();
+  for (const food of foods) {
+    const key = nameKey(food?.name);
+    if (!key) continue;
+    const since = food.inventorySince ? new Date(food.inventorySince) : new Date(0);
+    cutoff.set(key, Number.isNaN(since.getTime()) ? new Date(0) : since);
+  }
+  return cutoff;
+};
+
+const movementCountsForFood = (cutoff, name, createdAt) => {
+  const since = cutoff?.get(nameKey(name));
+  if (!since) return true;
+  const when = createdAt ? new Date(createdAt) : null;
+  if (!when || Number.isNaN(when.getTime())) return true;
+  return when >= since;
+};
+
 const movementDocsQuery = (names) => {
   const base = { status: { $ne: "cancelled" } };
   if (!Array.isArray(names) || names.length === 0) return base;
@@ -91,11 +115,12 @@ export const computeStockByProductNames = async ({
     invoiceQuery._id = { $ne: new mongoose.Types.ObjectId(excludeInvoiceId) };
   }
 
-  const [purchases, invoices, returnSales, purchaseReturns] = await Promise.all([
-    Purchase.find(query, { items: 1 }).lean(),
-    Invoice.find(invoiceQuery, { items: 1 }).lean(),
-    ReturnSale.find(query, { items: 1 }).lean(),
-    PurchaseReturn.find(query, { items: 1 }).lean(),
+  const [purchases, invoices, returnSales, purchaseReturns, cutoff] = await Promise.all([
+    Purchase.find(query, { items: 1, createdAt: 1 }).lean(),
+    Invoice.find(invoiceQuery, { items: 1, createdAt: 1 }).lean(),
+    ReturnSale.find(query, { items: 1, createdAt: 1 }).lean(),
+    PurchaseReturn.find(query, { items: 1, createdAt: 1 }).lean(),
+    getManagedFoodSaleCutoff(),
   ]);
 
   const qtyByKey = new Map();
@@ -118,6 +143,7 @@ export const computeStockByProductNames = async ({
     for (const item of doc?.items ?? []) {
       const name = normalizeName(item?.productName);
       if (!shouldInclude(name)) continue;
+      if (!movementCountsForFood(cutoff, name, doc?.createdAt)) continue;
       addQty(qtyByKey, name, -safeQty(item?.qty));
     }
   }
@@ -126,6 +152,7 @@ export const computeStockByProductNames = async ({
     for (const item of doc?.items ?? []) {
       const name = normalizeName(item?.productName);
       if (!shouldInclude(name)) continue;
+      if (!movementCountsForFood(cutoff, name, doc?.createdAt)) continue;
       addQty(qtyByKey, name, safeQty(item?.qty));
     }
   }

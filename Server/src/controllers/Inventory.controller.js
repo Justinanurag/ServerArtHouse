@@ -2,6 +2,8 @@ import Purchase from "../models/purchase.model.js";
 import Invoice from "../models/invoice.model.js";
 import ReturnSale from "../models/returnSale.model.js";
 import PurchaseReturn from "../models/purchaseReturn.model.js";
+import Food from "../models/food.model.js";
+import { getManagedFoodSaleCutoff } from "../utils/inventoryStock.utils.js";
 
 const toNumber = (value) => {
   const num = Number(value);
@@ -55,7 +57,8 @@ const bumpMovement = (map, item, movementType, docCreatedAt) => {
 
 export const getInventories = async (req, res) => {
   try {
-    const [purchases, invoices, returnSales, purchaseReturns] = await Promise.all([
+    const [purchases, invoices, returnSales, purchaseReturns, cutoff, managedFoods] =
+      await Promise.all([
       Purchase.find(
         { status: { $ne: "cancelled" } },
         { items: 1, createdAt: 1, status: 1 },
@@ -72,6 +75,8 @@ export const getInventories = async (req, res) => {
         { status: { $ne: "cancelled" } },
         { items: 1, createdAt: 1, status: 1 },
       ).lean(),
+      getManagedFoodSaleCutoff(),
+      Food.find({ manageInventory: true }).select("name price updatedAt").lean(),
     ]);
 
     const stockMap = new Map();
@@ -83,9 +88,18 @@ export const getInventories = async (req, res) => {
       }
     }
 
+    const saleCounts = (name, createdAt) => {
+      const since = cutoff.get(String(name || "").trim().toLowerCase());
+      if (!since) return true;
+      const when = createdAt ? new Date(createdAt) : null;
+      if (!when || Number.isNaN(when.getTime())) return true;
+      return when >= since;
+    };
+
     for (const invoice of invoices) {
       if (!includeByStatus(invoice?.status)) continue;
       for (const item of invoice?.items ?? []) {
+        if (!saleCounts(item?.productName, invoice?.createdAt)) continue;
         bumpMovement(stockMap, item, "invoice", invoice?.createdAt);
       }
     }
@@ -93,6 +107,7 @@ export const getInventories = async (req, res) => {
     for (const returnSale of returnSales) {
       if (!includeByStatus(returnSale?.status)) continue;
       for (const item of returnSale?.items ?? []) {
+        if (!saleCounts(item?.productName, returnSale?.createdAt)) continue;
         bumpMovement(stockMap, item, "sales_return", returnSale?.createdAt);
       }
     }
@@ -102,6 +117,23 @@ export const getInventories = async (req, res) => {
       for (const item of purchaseReturn?.items ?? []) {
         bumpMovement(stockMap, item, "purchase_return", purchaseReturn?.createdAt);
       }
+    }
+
+    const knownNames = new Set(
+      Array.from(stockMap.keys()).map((name) => String(name).trim().toLowerCase()),
+    );
+    for (const food of managedFoods) {
+      const name = String(food?.name || "").trim();
+      if (!name || knownNames.has(name.toLowerCase())) continue;
+      stockMap.set(name, {
+        item: name,
+        qty: 0,
+        purchase_price: 0,
+        sale_price: toNumber(food?.price),
+        last_updated: food?.updatedAt
+          ? new Date(food.updatedAt).toISOString()
+          : null,
+      });
     }
 
     const inventories = Array.from(stockMap.values())
