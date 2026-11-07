@@ -1,6 +1,6 @@
 import express from 'express';
 import {authenticateUser} from '../middlewares/auth.middleware.js';
-import {attachStaffContext, requirePermission} from '../middlewares/authorize.middleware.js';
+import {attachStaffContext, requireAnyPermission, requirePermission} from '../middlewares/authorize.middleware.js';
 import {PERMISSIONS} from '../constants/permissions.js';
 import {
   createSpace,
@@ -8,6 +8,7 @@ import {
   getSpaceById,
   updateSpace,
   deleteSpace,
+  signSpaceVideoUpload,
   uploadSpaceImage,
 } from '../controllers/space.controller.js';
 
@@ -18,6 +19,11 @@ router.get('/', getSpaces);
 
 router.use(authenticateUser, attachStaffContext);
 
+router.post(
+  '/video-signature',
+  requireAnyPermission(PERMISSIONS.SPACE_CREATE, PERMISSIONS.SPACE_UPDATE),
+  signSpaceVideoUpload,
+);
 router.get('/:id', requirePermission(PERMISSIONS.SPACE_READ), getSpaceById);
 router.post(
   '/',

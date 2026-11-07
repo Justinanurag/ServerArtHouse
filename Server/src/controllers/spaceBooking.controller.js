@@ -20,6 +20,9 @@ import {
   validateAndPersistSchedule,
 } from '../services/spaceBookingAvailability.service.js';
 import {bookingPaymentError} from '../utils/bookingPayment.js';
+import {applyOfferToBookingPayload} from './spaceOffer.controller.js';
+import {quoteBookingOffer} from '../services/spaceOffer.service.js';
+import SpaceOffer from '../models/spaceOffer.model.js';
 import {getBookingPaymentRule} from '../services/bookingPaymentSettings.service.js';
 
 const ALLOWED_STATUS = new Set([
@@ -442,6 +445,10 @@ const buildPayload = (body = {}, {partial = false} = {}) => {
     const n = Number(body.discountAmount);
     if (!Number.isNaN(n) && n >= 0) payload.discountAmount = n;
   }
+  if (!partial || body.offerDiscount !== undefined) {
+    const n = Number(body.offerDiscount);
+    if (!Number.isNaN(n) && n >= 0) payload.offerDiscount = n;
+  }
   if (!partial || body.cashbackAmount !== undefined) {
     const n = Number(body.cashbackAmount);
     if (!Number.isNaN(n) && n >= 0) payload.cashbackAmount = n;
@@ -603,6 +610,7 @@ export const createSpaceBooking = async (req, res) => {
       );
     }
 
+    await applyOfferToBookingPayload(payload);
     const paymentError = await bookingPaymentRejection(payload);
     if (paymentError) {
       return res.status(400).json({success: false, message: paymentError});
@@ -838,6 +846,7 @@ export const updateSpaceBooking = async (req, res) => {
       );
     }
 
+    await applyOfferToBookingPayload(payload, existing);
     const paymentError = await bookingPaymentRejection(
       {
         status: payload.status ?? existing.status,
@@ -1093,16 +1102,32 @@ const quoteForBooking = async (booking, {bookingDate, startTime, endTime, dayTyp
     : hourlyRate > 0
       ? money(hourlyRate * hours)
       : previousAmount;
+  const activeOffers = sameDayAndDuration
+    ? []
+    : await SpaceOffer.find({status: 'active', offerType: 'space_booking'}).lean();
+  const offerQuote = sameDayAndDuration
+    ? null
+    : quoteBookingOffer({
+        offers: activeOffers,
+        hours,
+        lines: [{hourlyRate, qty: Math.max(1, Number(booking.spaceQty) || 1)}],
+      });
+  const offerDiscount = sameDayAndDuration
+    ? money(booking.offerDiscount || 0)
+    : money(offerQuote?.discount || 0);
+  const amountAfterOffer = sameDayAndDuration
+    ? previousAmount
+    : money(Math.max(0, catalogueAmount - offerDiscount));
   const membership = await spaceMembershipForPhone(booking.customerPhone);
   const membershipPercent = membership?.percent || 0;
   const membershipDiscount = !sameDayAndDuration && membershipPercent > 0
-    ? money((catalogueAmount * membershipPercent) / 100)
+    ? money((amountAfterOffer * membershipPercent) / 100)
     : 0;
   // Same weekday or weekend and the same hours keeps the price already charged.
   // A changed slot uses the customer's current space membership on the new price.
   const newAmount = sameDayAndDuration
     ? previousAmount
-    : money(Math.max(0, catalogueAmount - membershipDiscount));
+    : money(Math.max(0, amountAfterOffer - membershipDiscount));
   const difference = money(newAmount - previousAmount);
   const paid = money(booking.paidAmount || 0);
   const nextDue = money(Math.max(0, newAmount - paid));
@@ -1131,6 +1156,21 @@ const quoteForBooking = async (booking, {bookingDate, startTime, endTime, dayTyp
       newDay: priced.dayType,
       hourlyRate,
       hours,
+      offerDiscount,
+      offerSnapshot: sameDayAndDuration
+        ? booking.offerSnapshot || null
+        : offerQuote?.applied
+          ? {
+              offerId: offerQuote.offerId,
+              offerName: offerQuote.offerName,
+              minimumHours: offerQuote.minimumHours,
+              freeHours: offerQuote.freeHours,
+              chargeableHours: offerQuote.chargeableHours,
+              originalAmount: offerQuote.originalAmount,
+              discount: offerQuote.discount,
+              finalAmount: offerQuote.finalAmount,
+            }
+          : null,
       newAmount,
       difference,
       additionalDue: difference > 0 ? money(Math.min(difference, nextDue)) : 0,
@@ -1359,6 +1399,8 @@ export const rescheduleSpaceBooking = async (req, res) => {
     booking.durationHours = quote.hours;
     booking.lineTotal = quote.newAmount;
     booking.grandTotal = quote.newAmount;
+    booking.offerDiscount = money(quote.offerDiscount || 0);
+    booking.offerSnapshot = quote.offerSnapshot || null;
     booking.paidAmount = position.paidAmount;
     booking.dueAmount = position.dueAmount;
     booking.paymentStatus = position.paymentStatus;

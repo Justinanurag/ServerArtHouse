@@ -52,3 +52,26 @@ export const uploadOnCloudinary = async (localFilePath, options = {}) => {
     return null;
   }
 };
+
+/** Signature for a browser upload. The API secret stays on the server. */
+export const signDirectUpload = folder => {
+  if (!process.env.CLOUDINARY_URL) {
+    const error = new Error('Cloudinary is not configured.');
+    error.status = 500;
+    throw error;
+  }
+  cloudinary.config(true);
+  const {api_key: apiKey, api_secret: apiSecret, cloud_name: cloudName} =
+    cloudinary.config();
+  if (!apiKey || !apiSecret || !cloudName) {
+    const error = new Error('Cloudinary is not configured.');
+    error.status = 500;
+    throw error;
+  }
+  const timestamp = Math.round(Date.now() / 1000);
+  const signature = cloudinary.utils.api_sign_request(
+    {folder, timestamp},
+    apiSecret,
+  );
+  return {cloudName, apiKey, timestamp, signature, folder};
+};

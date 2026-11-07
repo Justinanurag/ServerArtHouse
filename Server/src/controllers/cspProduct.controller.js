@@ -212,7 +212,7 @@ export const createMyCspProduct = async (req, res) => {
       purchasePrice: 0,
       category,
       stockQty: stock,
-      stockStatus: stock > 0 ? 'in_stock' : 'out_of_stock',
+      stockStatus: stock >= 3 ? 'in_stock' : 'out_of_stock',
       discountType,
       discountValue,
       images: imageUrl ? [imageUrl] : [],
@@ -304,7 +304,7 @@ export const updateMyCspProduct = async (req, res) => {
     product.category = category;
     product.sellingPrice = price;
     product.stockQty = stock;
-    product.stockStatus = stock > 0 ? 'in_stock' : 'out_of_stock';
+    product.stockStatus = stock >= 3 ? 'in_stock' : 'out_of_stock';
     product.discountType = discountType;
     product.discountValue = discountValue;
     product.imageUrl = imageUrl;

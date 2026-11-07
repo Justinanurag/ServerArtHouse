@@ -72,6 +72,12 @@ const buildFoodPayload = (body = {}, imageUrl) => {
         : 'Active',
   };
 
+  if (body.applyMembershipDiscount !== undefined) {
+    payload.applyMembershipDiscount = !['false', '0', 'no', 'off'].includes(
+      String(body.applyMembershipDiscount).trim().toLowerCase(),
+    );
+  }
+
   if (imageUrl !== undefined) {
     payload.imageUrl = imageUrl;
   } else if (body.imageUrl !== undefined) {

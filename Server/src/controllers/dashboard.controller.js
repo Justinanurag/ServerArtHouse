@@ -5,6 +5,7 @@ import Vendor from '../models/vendor.model.js';
 import CustomersailorProgram from '../models/customerSellerProgram.model.js';
 import Purchase from '../models/purchase.model.js';
 import Expence from '../models/expence.model.js';
+import Membership from '../models/membership.model.js';
 
 const PERIODS = new Set(['today', 'this_month', 'last_month', 'lifetime']);
 
@@ -161,6 +162,7 @@ export const getDashboardSummary = async (req, res) => {
       req.query.fromDate,
       req.query.toDate,
     );
+    // console.log(range)
     const {from, to, period, fromDate, toDate} = range;
 
     const invoiceDateFilter = orDateQuery(['invoiceDate', 'createdAt'], from, to);
@@ -285,6 +287,50 @@ export const getDashboardSummary = async (req, res) => {
         if (!code) continue;
         membershipCount += 1;
         membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
+      }
+    }
+
+    // For all date filters: ensure membership is always displayed on the dashboard
+    if (membershipCount === 0) {
+      const allActiveSubs = await Subscription.find({
+        status: { $nin: ['Cancelled', 'Expired'] },
+      }).lean();
+      for (const sub of allActiveSubs) {
+        membershipCount += 1;
+        const code =
+          membershipAbbrev(sub.membershipType) ||
+          membershipAbbrev(sub.planId) ||
+          membershipAbbrev(sub.membershipPlan) ||
+          'XX';
+        membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
+      }
+      if (membershipCount === 0) {
+        const allMembershipCustomers = await Customer.find({
+          membershipType: { $exists: true, $nin: [null, '', 'none', 'None'] },
+        })
+          .select('membershipType')
+          .lean();
+        for (const c of allMembershipCustomers) {
+          const code = membershipAbbrev(c.membershipType);
+          if (!code) continue;
+          membershipCount += 1;
+          membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
+        }
+      }
+      if (membershipCount === 0) {
+        const activePlans = await Membership.find({
+          status: { $nin: ['Inactive', 'inactive', 'archived'] },
+        })
+          .select('planId displayName')
+          .lean();
+        for (const plan of activePlans) {
+          const code =
+            membershipAbbrev(plan.displayName) ||
+            membershipAbbrev(plan.planId) ||
+            'PL';
+          membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
+        }
+        membershipCount = activePlans.length;
       }
     }
 

@@ -471,7 +471,6 @@ const getCustomers = async (req, res) => {
     const search = String(req.query.search ?? '').trim();
     const fromDate = String(req.query.fromDate ?? '').trim();
     const toDate = String(req.query.toDate ?? '').trim();
-    console.log(search);
 
     const limit = Math.min(
       Math.max(Number(req.query.limit) || 50, 1),
@@ -483,7 +482,7 @@ const getCustomers = async (req, res) => {
     const includeTotal = String(req.query.includeTotal ?? 'true') !== 'false';
 
     const query = buildCustomerListQuery(search);
-     const createdRange = {};
+    const createdRange = {};
     if (fromDate) {
       const from = new Date(`${fromDate}T00:00:00.000`);
       if (!Number.isNaN(from.getTime())) createdRange.$gte = from;

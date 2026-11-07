@@ -96,6 +96,12 @@ const productSchema = new mongoose.Schema(
       enum: ['in_stock', 'out_of_stock'],
       default: 'in_stock',
     },
+    /** Null means no alert. Stock at or below this number is low stock. */
+    lowStockAlertLevel: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
     imageUrl: {
       type: String,
       default: null,
@@ -175,6 +181,7 @@ productSchema.index(
 // List / search / sort indexes for paginated product catalogue
 productSchema.index({ createdAt: -1, _id: -1 });
 productSchema.index({ productName: 1 });
+productSchema.index({ lowStockAlertLevel: 1 });
 productSchema.index({ category: 1 });
 productSchema.index({ itemType: 1, type: 1, createdAt: -1 });
 productSchema.index({ 'variants.name': 1 });

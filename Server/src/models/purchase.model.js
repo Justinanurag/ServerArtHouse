@@ -193,6 +193,9 @@ const purchaseSchema = new mongoose.Schema(
   }
 );
 
+purchaseSchema.index({ status: 1, invoiceDate: -1, createdAt: -1 });
+purchaseSchema.index({ "items.productName": 1 });
+
 const Purchase = mongoose.model("Purchase", purchaseSchema);
 
 export default Purchase;

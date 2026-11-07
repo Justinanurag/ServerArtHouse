@@ -308,6 +308,7 @@ export const MENU_PERMISSION_MAP = Object.freeze({
   '/guests': PERMISSIONS.GUEST_READ,
   '/wallet': PERMISSIONS.WALLET_READ,
   '/coupons': PERMISSIONS.COUPON_READ,
+  '/set-offers': PERMISSIONS.COUPON_READ,
   '/announcements': PERMISSIONS.ANNOUNCEMENT_READ,
   '/affiliate-program': PERMISSIONS.AFFILIATE_READ,
   '/staffCommission': PERMISSIONS.STAFF_COMMISSION_READ,

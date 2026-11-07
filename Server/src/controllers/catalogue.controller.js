@@ -130,6 +130,8 @@ const expandProductCatalogueRows = (product, searchRegex, stockByName) => {
     discountValue: Number(product.discountValue ?? 0),
     isCsp,
     cspLabel: isCsp ? 'CSP' : null,
+    manageInventory: Boolean(product.foodId) && product.foodInventoryActive !== false,
+    skipMembershipDiscount: product.applyMembershipDiscount === false,
   };
 
   const pushParent = () => {
@@ -327,24 +329,37 @@ const mapSpace = (space) => {
   };
 };
 
-const mapFood = (food) => ({
-  _id: food._id,
-  sourceId: food._id,
-  sourceType: 'food',
-  name: String(food.name ?? '').trim(),
-  productName: String(food.name ?? '').trim(),
-  sellingPrice: Number(food.price ?? 0),
-  stockQty: null,
-  trackStock: false,
-  category: food.category || 'Food',
-  lineCategory: 'food',
-  imageUrl: food.imageUrl || null,
-  unit: food.unit || 'Plate',
-  isVeg: food.isVeg !== false,
-  status: food.status || 'Active',
-  discountType: 'flat',
-  discountValue: 0,
-});
+const mapFood = (food, stockByName) => {
+  const name = String(food.name ?? '').trim();
+  const managed = food.manageInventory === true;
+  let stockQty = null;
+  if (managed && stockByName) {
+    const exact = stockByName.get(name);
+    const lower = stockByName.get(name.toLowerCase());
+    stockQty = Number(exact != null ? exact : lower ?? 0) || 0;
+  }
+  return {
+    _id: food._id,
+    sourceId: food._id,
+    sourceType: 'food',
+    name,
+    productName: name,
+    sellingPrice: Number(food.price ?? 0),
+    stockQty,
+    trackStock: managed,
+    category: food.category || 'Food',
+    lineCategory: 'food',
+    imageUrl: food.imageUrl || null,
+    unit: food.unit || 'Plate',
+    isVeg: food.isVeg !== false,
+    status: food.status || 'Active',
+    manageInventory: managed,
+    applyMembershipDiscount: food.applyMembershipDiscount !== false,
+    skipMembershipDiscount: food.applyMembershipDiscount === false,
+    discountType: 'flat',
+    discountValue: 0,
+  };
+};
 
 /** Expand + dedupe + sort catalogue rows from fetched entity docs. */
 const buildSortedCatalogueItems = ({
@@ -360,7 +375,7 @@ const buildSortedCatalogueItems = ({
   );
   const services = serviceDocs.map(mapService);
   const spaces = spaceDocs.map(mapSpace);
-  const foods = foodDocs.map(mapFood);
+  const foods = foodDocs.map((food) => mapFood(food, stockMap));
 
   return sortCatalogueItems(
     dedupeServiceWhenProductExists(
@@ -407,6 +422,7 @@ export const lookupCatalogueItems = async (req, res) => {
     const productFilter = {
       type: {$ne: 'service'},
       itemType: {$ne: 'service'},
+      foodInventoryActive: {$ne: false},
       ...(textSearch || {}),
     };
 
@@ -527,7 +543,13 @@ export const lookupCatalogueItems = async (req, res) => {
     ] = await Promise.all(tasks);
 
     const productNames = [
-      ...new Set(productDocs.flatMap((p) => getProductStockNames(p))),
+      ...new Set([
+        ...productDocs.flatMap((p) => getProductStockNames(p)),
+        ...foodDocs
+          .filter((food) => food.manageInventory === true)
+          .map((food) => String(food.name || '').trim())
+          .filter(Boolean),
+      ]),
     ];
     const stockMap =
       productNames.length > 0

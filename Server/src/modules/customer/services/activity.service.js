@@ -296,7 +296,7 @@ export async function getCustomerActivityDetail(
 
 /**
  * Bill opened from the WhatsApp Download Invoice link.
- * The invoice id is the access key. Drafts stay private.
+ * The invoice id is the access key.
  */
 export function readPublicInvoiceId(raw) {
   const text = String(raw || '').trim();
@@ -315,10 +315,7 @@ export async function getPublicInvoice(invoiceId) {
   if (!mongoose.Types.ObjectId.isValid(id)) return null;
   invoiceId = id;
 
-  const inv = await Invoice.findOne({
-    _id: invoiceId,
-    status: {$ne: 'draft'},
-  })
+  const inv = await Invoice.findOne({_id: invoiceId})
     .select(`${activitySelectFields} customerName membershipType`)
     .lean();
 

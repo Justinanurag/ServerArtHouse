@@ -26,6 +26,7 @@ import vendorRoutes from './routes/vendor.router.js';
 import inventoryRoutes from './routes/Inventory.router.js';
 import walletRoutes from './routes/wallet.router.js';
 import couponRoutes from './routes/coupon.route.js';
+import spaceOfferRoutes from './routes/spaceOffer.route.js';
 import giftCardRoutes from './routes/giftCard.route.js';
 import companyRoutes from './routes/company.route.js';
 import affiliateRoutes from './routes/affiliate.route.js';
@@ -70,7 +71,7 @@ app.use(
   }),
 );
 const allowedOrigins = [
-   "https://www.woowooarthouse.in",
+  "https://www.woowooarthouse.in",
   "https://woowooarthouse.in",
   "https://admin.woowooarthouse.in",
   "https://api.woowooarthouse.in",
@@ -78,6 +79,10 @@ const allowedOrigins = [
   "https://woo-woo-erp-5iyu.vercel.app",
   "http://localhost:5173",
   "http://localhost:5174",
+  ...String(process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
 ];
 
 app.use(
@@ -163,6 +168,7 @@ app.use('/inventory', inventoryRoutes);
 
 app.use('/wallet', walletRoutes);
 app.use('/coupon', couponRoutes);
+app.use('/space-offers', spaceOfferRoutes);
 app.use('/gift-cards', giftCardRoutes);
 app.use('/company', companyRoutes);
 app.use('/affiliate', affiliateRoutes);

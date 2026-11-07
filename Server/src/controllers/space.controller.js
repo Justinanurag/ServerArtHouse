@@ -11,7 +11,7 @@ import Space, {
   COWORKING_CATEGORIES,
   ALL_SPACE_CATEGORIES,
 } from '../models/space.model.js';
-import {uploadOnCloudinary} from '../utils/cloudinary.js';
+import {signDirectUpload, uploadOnCloudinary} from '../utils/cloudinary.js';
 
 export const generateNextSpaceCode = async () => {
   try {
@@ -321,6 +321,18 @@ const uploadSpaceFile = async file => {
 
 const MAX_SPACE_VIDEOS = 4;
 
+export const signSpaceVideoUpload = (req, res) => {
+  try {
+    const upload = signDirectUpload('woowoo/spaces');
+    return res.status(200).json({success: true, upload});
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Could not prepare the video upload.',
+    });
+  }
+};
+
 const resolveSpaceMedia = async req => {
   const imageFiles = [
     ...(req.files?.images || []),
@@ -386,7 +398,9 @@ const applySpaceMedia = (payload, media) => {
 export const createSpace = async (req, res) => {
   try {
     const media = await resolveSpaceMedia(req);
+    console.log('media', media);
     const {name, payload, error} = buildSpacePayload(req.body, media.imageUrl);
+    console.log('payload', payload);
 
     if (error) {
       return res.status(400).json({success: false, message: error});

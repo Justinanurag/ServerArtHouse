@@ -46,6 +46,11 @@ const foodSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+    /** Off = charge full price. On = apply the customer's membership discount. */
+    applyMembershipDiscount: {
+      type: Boolean,
+      default: true,
+    },
     /** First time inventory was turned on. Earlier food bills do not consume this stock. */
     inventorySince: {
       type: Date,

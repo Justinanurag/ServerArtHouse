@@ -4,6 +4,7 @@ import Customer from '../models/customer.model.js';
 import Coupon from '../models/coupon.model.js';
 import Invoice from '../models/invoice.model.js';
 import Product from '../models/product.model.js';
+import Food from '../models/food.model.js';
 import SpaceBooking from '../models/spaceBooking.model.js';
 import Wallet from '../models/wallet.model.js';
 import {
@@ -581,9 +582,19 @@ const productNamesSkippingMembership = async () => {
   return names;
 };
 
+const foodNamesSkippingMembership = async () => {
+  const foods = await Food.find({applyMembershipDiscount: false}).select('name').lean();
+  const names = new Set();
+  for (const food of foods) {
+    const name = String(food?.name || '').trim().toLowerCase();
+    if (name) names.add(name);
+  }
+  return names;
+};
+
 const namesWithoutMembershipDiscount = async () => {
   const [foods, products] = await Promise.all([
-    managedFoodNameSet(),
+    foodNamesSkippingMembership(),
     productNamesSkippingMembership(),
   ]);
   return new Set([...foods, ...products]);

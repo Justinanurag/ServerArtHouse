@@ -334,5 +334,8 @@ const invoiceSchema = new mongoose.Schema(
   {timestamps: true},
 );
 
+invoiceSchema.index({ status: 1, invoiceDate: -1, createdAt: -1 });
+invoiceSchema.index({ 'items.productName': 1 });
+
 const Invoice = mongoose.model('Invoice', invoiceSchema);
 export default Invoice;

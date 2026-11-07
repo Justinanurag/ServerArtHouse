@@ -134,6 +134,15 @@ const spaceBookingSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    offerDiscount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    offerSnapshot: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
     cashbackAmount: {
       type: Number,
       default: 0,

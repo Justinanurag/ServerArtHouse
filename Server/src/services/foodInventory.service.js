@@ -44,6 +44,7 @@ const productFields = (food, existing) => ({
   itemType: 'product',
   foodId: food._id,
   foodInventoryActive: true,
+  applyMembershipDiscount: food.applyMembershipDiscount !== false,
 });
 
 /**
