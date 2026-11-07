@@ -1044,6 +1044,28 @@ const PRODUCT_LIST_SELECT = [
   'updatedAt',
 ].join(' ');
 
+const countLowStockProducts = async (query) => {
+  const alertProducts = await Product.find({
+    $and: [
+      query,
+      {lowStockAlertLevel: {$ne: null}},
+      {itemType: {$ne: 'service'}},
+      {type: {$ne: 'service'}},
+    ],
+  })
+    .select('productName lowStockAlertLevel variants.name')
+    .lean();
+  if (!alertProducts.length) return 0;
+  const names = [...new Set(alertProducts.flatMap((product) => getProductStockNames(product)))];
+  const stockMap = await computeStockByProductNames({names});
+  return alertProducts.reduce((count, product) => {
+    const level = Number(product.lowStockAlertLevel);
+    if (!Number.isFinite(level) || level < 0) return count;
+    const qty = sumStockForNames(stockMap, getProductStockNames(product));
+    return qty <= level ? count + 1 : count;
+  }, 0);
+};
+
 const ALLOWED_PRODUCT_SORT = new Set([
   'createdAt',
   'updatedAt',
@@ -1214,6 +1236,10 @@ export const getProducts = async (req, res) => {
         ...product,
         stockQty: liveStockQty,
         stockStatus: liveStockQty >= 3 ? 'in_stock' : 'out_of_stock',
+        isLowStock:
+          !isService &&
+          product.lowStockAlertLevel != null &&
+          liveStockQty <= Number(product.lowStockAlertLevel),
       };
     });
 
@@ -1250,6 +1276,7 @@ export const getProducts = async (req, res) => {
         inStockCount: Number(row?.inStockCount || 0),
         outOfStockCount: Number(row?.outOfStockCount || 0),
         categoryCount: categories.filter((c) => String(c || '').trim()).length,
+        lowStockCount: await countLowStockProducts(query),
       };
     }
 
