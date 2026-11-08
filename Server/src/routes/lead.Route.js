@@ -9,6 +9,12 @@ import {
   updateLead,
   uploadLeadAttachments,
 } from '../controllers/lead.controller.js';
+import {
+  createLeadLabel,
+  deleteLeadLabel,
+  listLeadLabels,
+  updateLeadLabel,
+} from '../controllers/leadLabel.controller.js';
 import {authenticateUser} from '../middlewares/auth.middleware.js';
 import {attachStaffContext} from '../middlewares/authorize.middleware.js';
 
@@ -17,6 +23,10 @@ router.use(authenticateUser, attachStaffContext);
 
 router.get('/', getLead);
 router.get('/membership', getLeadMembership);
+router.get('/labels', listLeadLabels);
+router.post('/labels', createLeadLabel);
+router.patch('/labels/:labelId', updateLeadLabel);
+router.delete('/labels/:labelId', deleteLeadLabel);
 router.get('/:id', getLeadById);
 router.post('/:id/timeline', addLeadTimeline);
 router.post('/', uploadLeadAttachments.array('attachments'), createLead);
@@ -25,4 +35,4 @@ router.delete('/', deleteLead);
 router.patch('/:id', uploadLeadAttachments.array('attachments'), updateLead);
 router.patch('/', uploadLeadAttachments.array('attachments'), updateLead);
 
-export default router;
+export default router;

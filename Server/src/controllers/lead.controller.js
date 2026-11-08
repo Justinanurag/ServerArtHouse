@@ -10,6 +10,7 @@ import User from '../models/auth.model.js';
 import Counter from '../models/counter.model.js';
 import { uploadOnCloudinary } from '../utils/cloudinary.js';
 import { attachMembershipExpiry } from '../services/membershipEligibility.service.js';
+import { normalizeLabelIds } from './leadLabel.controller.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -295,6 +296,23 @@ const withMembership = (lead, memberships) => {
   };
 };
 
+const presentLead = (lead, memberships) => {
+  const row = withMembership(lead, memberships);
+  const raw = Array.isArray(row.labelIds) ? row.labelIds : [];
+  const labels = raw
+    .filter((item) => item && typeof item === 'object' && item._id)
+    .map((item) => ({
+      _id: String(item._id),
+      name: item.name || '',
+      color: item.color || '#6366F1',
+    }));
+  return {
+    ...row,
+    labels,
+    labelIds: labels.length ? labels.map((item) => item._id) : raw.map((item) => String(item)),
+  };
+};
+
 export const getLeadMembership = async (req, res) => {
   try {
     const phone = String(req.query.phone || '').replace(/\D/g, '').slice(-10);
@@ -312,7 +330,7 @@ export const getLeadMembership = async (req, res) => {
 export const getLead = async (req, res) => {
   try {
     await backfillExistingLeads();
-    const { fromDate, toDate, purpose, status, source, assignedTo, deadline, deadlineFrom, deadlineTo, search, leadId } = req.query;
+    const { fromDate, toDate, purpose, status, source, assignedTo, deadline, deadlineFrom, deadlineTo, search, leadId, labels } = req.query;
     const filter = {};
 
     if (leadId && leadId.trim()) {
@@ -337,6 +355,13 @@ export const getLead = async (req, res) => {
     }
     if (source && source !== 'all') {
       filter.source = source.trim();
+    }
+    const labelIds = String(labels || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (labelIds.length) {
+      filter.labelIds = { $in: labelIds };
     }
     if (assignedTo && assignedTo !== 'all') {
       if (assignedTo === 'unassigned') {
@@ -418,14 +443,13 @@ export const getLead = async (req, res) => {
         filter.createdAt.$lte = endDate;
       }
     }
-    const leads = await Lead.find(filter).sort({ createdAt: -1 }).lean();
-    console.log(leads);
+    const leads = await Lead.find(filter).populate('labelIds', 'name color').sort({ createdAt: -1 }).lean();
     const memberships = await getMembershipsByPhone(leads.map((l) => l.phone));
 
     res.status(200).json({
       success: true,
       message: "Leads fetched successfully",
-      data: leads.map((lead) => withMembership(lead, memberships)),
+      data: leads.map((lead) => presentLead(lead, memberships)),
     });
   } catch (error) {
     console.error("Get Leads Error:", error);
@@ -467,7 +491,7 @@ export const getLeadById = async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Lead fetched successfully",
-      data: withMembership(lead, memberships),
+      data: presentLead(await Lead.findById(lead._id).populate('labelIds', 'name color').lean(), memberships),
     });
   } catch (error) {
     console.error("Get Lead By ID Error:", error);
@@ -559,6 +583,10 @@ export const updateLead = async (req, res) => {
       lead.createdBy = parseMaybeJson(req.body.createdBy);
     }
 
+    if (req.body.labelIds !== undefined) {
+      lead.labelIds = await normalizeLabelIds(parseMaybeJson(req.body.labelIds));
+    }
+
     // Handle attachments (existing + newly uploaded)
     if (req.body.attachments !== undefined || (req.files && req.files.length > 0)) {
       const existingAttachments = req.body.attachments !== undefined
@@ -583,11 +611,12 @@ export const updateLead = async (req, res) => {
 
     const updatedLead = await lead.save();
     const memberships = await getMembershipsByPhone([updatedLead.phone]);
+    const fresh = await Lead.findById(updatedLead._id).populate('labelIds', 'name color').lean();
 
     res.status(200).json({
       success: true,
       message: "Lead updated successfully",
-      data: withMembership(updatedLead, memberships),
+      data: presentLead(fresh, memberships),
     });
   } catch (error) {
     console.error("Update Lead Error:", error);
@@ -626,6 +655,7 @@ export const createLead = async (req, res) => {
       createdBy,
       assignedTo,
       attachments,
+      labelIds,
     } = req.body;
 
     // Name validation
@@ -686,6 +716,7 @@ export const createLead = async (req, res) => {
       attachments: allAttachments,
       createdBy: createdByParsed || actor,
       assignedTo: assignedToParsed || undefined,
+      labelIds: await normalizeLabelIds(parseMaybeJson(labelIds)),
       timeline: [
         {
           type: 'created',
@@ -711,11 +742,12 @@ export const createLead = async (req, res) => {
     });
 
     const memberships = await getMembershipsByPhone([lead.phone]);
+    const fresh = await Lead.findById(lead._id).populate('labelIds', 'name color').lean();
 
     res.status(201).json({
       success: true,
       message: "Lead created successfully",
-      data: withMembership(lead, memberships),
+      data: presentLead(fresh, memberships),
     });
   } catch (error) {
     console.error("Create Lead Error:", error);
@@ -775,10 +807,11 @@ export const addLeadTimeline = async (req, res) => {
     });
     const saved = await lead.save();
     const memberships = await getMembershipsByPhone([saved.phone]);
+    const fresh = await Lead.findById(saved._id).populate('labelIds', 'name color').lean();
     return res.status(200).json({
       success: true,
       message: 'Lead status updated.',
-      data: withMembership(saved, memberships),
+      data: presentLead(fresh, memberships),
     });
   } catch (error) {
     console.error('Add Lead Timeline Error:', error);

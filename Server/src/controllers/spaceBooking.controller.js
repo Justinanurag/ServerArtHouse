@@ -163,15 +163,20 @@ export const syncBookingStatuses = async () => {
 };
 
 const toMinutes = timeStr => {
-  const m = String(timeStr || '').trim().match(TIME_RE);
+  const raw = String(timeStr || '').trim();
+  if (raw === '24:00') return 24 * 60;
+  const m = raw.match(TIME_RE);
   if (!m) return null;
   return Number(m[1]) * 60 + Number(m[2]);
 };
+
+const isEndTime = value => String(value || '').trim() === '24:00' || TIME_RE.test(String(value || '').trim());
 
 const formatTimeDisplay = timeStr => {
   const mins = toMinutes(timeStr);
   if (mins == null) return String(timeStr || '');
   const h = Math.floor(mins / 60);
+  if (h >= 24) return '12:00 AM';
   const m = mins % 60;
   const period = h >= 12 ? 'PM' : 'AM';
   const displayH = h % 12 === 0 ? 12 : h % 12;
@@ -204,6 +209,7 @@ const applyLinkedInvoicePayments = async bookings => {
   const byId = new Map(invoices.map(invoice => [String(invoice._id), invoice]));
   const byCode = new Map(invoices.map(invoice => [String(invoice.invoiceCode || ''), invoice]));
   for (const booking of list) {
+    if (String(booking.status || '') === 'Draft') continue;
     const invoice =
       byId.get(String(booking.invoiceId || '')) ||
       byCode.get(String(booking.invoiceCode || ''));
@@ -261,6 +267,14 @@ const serializeBooking = doc => {
 
 /** A leftover under ₹1 is the bill round-off, not an open due. */
 const settleRoundOff = plain => {
+  if (String(plain.status || '') === 'Draft') {
+    const total = money(plain.grandTotal || plain.lineTotal || plain.summarySnapshot?.grandTotal || 0);
+    return {
+      paidAmount: 0,
+      dueAmount: total,
+      paymentStatus: '',
+    };
+  }
   const total = money(plain.grandTotal || plain.lineTotal || 0);
   const paid = money(plain.paidAmount || 0);
   const storedDue = money(plain.dueAmount || 0);
@@ -326,7 +340,7 @@ const buildPayload = (body = {}, {partial = false} = {}) => {
 
   if (!partial || body.endTime !== undefined) {
     const endTime = String(body.endTime ?? '').trim();
-    if (!TIME_RE.test(endTime)) errors.push('Valid end time is required (HH:mm).');
+    if (!isEndTime(endTime)) errors.push('Valid end time is required (HH:mm).');
     else payload.endTime = endTime;
   }
 
@@ -1067,7 +1081,7 @@ const loadOpenBooking = async id => {
 const quoteForBooking = async (booking, {bookingDate, startTime, endTime, dayType}) => {
   const dateKey = dateKeyFromInput(bookingDate);
   if (!dateKey) return {error: 'A valid booking date is required.'};
-  if (!TIME_RE.test(String(startTime || '')) || !TIME_RE.test(String(endTime || ''))) {
+  if (!TIME_RE.test(String(startTime || '')) || !isEndTime(endTime)) {
     return {error: 'Valid start and end times are required (HH:mm).'};
   }
   if (toMinutes(endTime) <= toMinutes(startTime)) {

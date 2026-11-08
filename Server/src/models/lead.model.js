@@ -165,12 +165,21 @@ const leadSchema = new mongoose.Schema(
         },
       },
     ],
+
+    labelIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "LeadLabel",
+      },
+    ],
   },
   {
     timestamps: true,
   }
 );
 
+
+leadSchema.index({ labelIds: 1 });
 
 leadSchema.pre("validate", function (next) {
   const phone = this.phone?.trim();

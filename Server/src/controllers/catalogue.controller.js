@@ -100,6 +100,9 @@ const parentMatchesSearch = (product, searchRegex) => {
  * stockByName: Map of line name → live stock (parent and each "Parent - Variant").
  */
 const expandProductCatalogueRows = (product, searchRegex, stockByName) => {
+  // Inventory-managed food stays in the Food category. The stock product
+  // is only a stock record and must not reclassify the food as a product.
+  if (product.foodId && product.foodInventoryActive !== false) return [];
   const parentName = String(product.productName ?? '').trim();
   const rawVariants = Array.isArray(product.variants) ? product.variants : [];
   const variants = sortVariantDocs(
@@ -242,9 +245,12 @@ const dedupeParentRowsWhenVariantsExist = (rows = []) => {
  * Prevents "Masking Tape" showing twice (PRODUCT + SERVICE) when DB has twin rows.
  */
 const dedupeServiceWhenProductExists = (rows = []) => {
-  const productNames = new Set(
+  const takenNames = new Set(
     rows
-      .filter((row) => String(row?.sourceType || '') === 'product')
+      .filter((row) => {
+        const type = String(row?.sourceType || '');
+        return type === 'product' || type === 'food';
+      })
       .map((row) =>
         String(row?.productName || row?.name || '')
           .trim()
@@ -253,14 +259,14 @@ const dedupeServiceWhenProductExists = (rows = []) => {
       .filter(Boolean),
   );
 
-  if (!productNames.size) return rows;
+  if (!takenNames.size) return rows;
 
   return rows.filter((row) => {
     if (String(row?.sourceType || '') !== 'service') return true;
     const name = String(row?.productName || row?.name || '')
       .trim()
       .toLowerCase();
-    return !name || !productNames.has(name);
+    return !name || !takenNames.has(name);
   });
 };
 
@@ -428,6 +434,7 @@ export const lookupCatalogueItems = async (req, res) => {
 
     const serviceFilter = {
       $or: [{type: 'service'}, {itemType: 'service'}],
+      foodId: null,
       ...(textSearch || {}),
     };
 

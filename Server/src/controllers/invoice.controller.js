@@ -601,10 +601,12 @@ const namesWithoutMembershipDiscount = async () => {
 };
 
 const withoutInventoryFoodMembership = (items, managedNames) => {
-  if (!managedNames?.size) return items;
-  return items.map(item => {
+  if (!managedNames?.size) return {items, removedCashback: 0};
+  let removedCashback = 0;
+  const next = items.map(item => {
     const key = String(item.productName || '').trim().toLowerCase();
     if (!managedNames.has(key)) return item;
+    removedCashback += Math.max(0, Number(item.cashback) || 0);
     const productDiscount = Math.max(0, Number(item.productDiscountAmount) || 0);
     const discount = Math.min(Math.max(0, Number(item.discount) || 0), productDiscount);
     const qty = Number(item.qty) || 0;
@@ -612,10 +614,12 @@ const withoutInventoryFoodMembership = (items, managedNames) => {
     return {
       ...item,
       discount,
+      cashback: 0,
       membershipDiscountAmount: 0,
       lineTotal: Math.max(0, qty * unitPrice - discount),
     };
   });
+  return {items: next, removedCashback};
 };
 
 const normalizeInvoiceItem = (item, previous = {}) => {
@@ -740,9 +744,14 @@ const createInvoice = async (req, res) => {
       });
     }
 
-    const normalizedItems = withoutInventoryFoodMembership(
+    const strippedMembership = withoutInventoryFoodMembership(
       items.map(item => normalizeInvoiceItem(item)),
       await namesWithoutMembershipDiscount(),
+    );
+    const normalizedItems = strippedMembership.items;
+    const cashbackAfterMembershipRules = Math.max(
+      0,
+      Number(cashbackTotal ?? 0) - strippedMembership.removedCashback,
     );
 
     if (normalizedItems.some(item => !item.productName || item.qty <= 0 || item.unitPrice < 0 || item.discount < 0 || item.lineTotal < 0)) {
@@ -783,7 +792,7 @@ const createInvoice = async (req, res) => {
       await rejectExpiredMembershipBenefits(res, customer, {
         items,
         membershipDiscount,
-        cashbackTotal,
+        cashbackTotal: cashbackAfterMembershipRules,
       })
     ) {
       return;
@@ -1036,7 +1045,7 @@ const createInvoice = async (req, res) => {
       membershipType: String(membershipType ?? customer?.membershipType ?? '')
         .trim()
         .toLowerCase(),
-      cashbackTotal: Math.max(0, Number(cashbackTotal ?? 0)),
+      cashbackTotal: cashbackAfterMembershipRules,
       pendingAmount: normalizedPendingAmount,
       mode: String(mode ?? 'Cash'),
       paymentStatus:
@@ -1055,6 +1064,7 @@ const createInvoice = async (req, res) => {
         card: Number(paymentBreakdown?.card ?? 0),
         wallet: walletAmount,
         paidAmount: (() => {
+          if (status === 'draft') return 0;
           const explicit = Number(paymentBreakdown?.paidAmount ?? 0);
           if (explicit > 0) return explicit;
           const parts =
@@ -1082,7 +1092,7 @@ const createInvoice = async (req, res) => {
     }
 
     // Post membership cashback to wallet before WhatsApp (idempotent per invoice)
-    const cashbackToCredit = Math.max(0, Number(cashbackTotal ?? 0));
+    const cashbackToCredit = cashbackAfterMembershipRules;
     if (
       cashbackToCredit > 0 &&
       customer &&
@@ -1172,7 +1182,7 @@ const createInvoice = async (req, res) => {
       items: normalizedItems,
       activityType,
       membershipDiscount,
-      cashbackTotal,
+      cashbackTotal: cashbackAfterMembershipRules,
       membershipType,
       // Pass totals explicitly — do not rely on mongoose subdoc timing
       amountPaidOverride: computedGrandTotal,
@@ -1457,15 +1467,18 @@ const updateInvoice = async (req, res) => {
     }
 
     let normalizedItems;
+    let removedMembershipCashback = 0;
     if (items && Array.isArray(items)) {
       const existingItems = Array.isArray(existingInvoice.items) ? existingInvoice.items : [];
-      normalizedItems = withoutInventoryFoodMembership(
+      const strippedMembership = withoutInventoryFoodMembership(
         items.map((item, idx) => {
           const previous = existingItems[idx] || {};
           return normalizeInvoiceItem(item, previous);
         }),
         await namesWithoutMembershipDiscount(),
       );
+      normalizedItems = strippedMembership.items;
+      removedMembershipCashback = strippedMembership.removedCashback;
     }
 
     if (normalizedItems && normalizedItems.length) {
@@ -1545,7 +1558,10 @@ const updateInvoice = async (req, res) => {
       updateData.pendingAmount = Number(paymentBreakdown?.dueAmount ?? 0);
     }
     if (req.body?.cashbackTotal !== undefined) {
-      updateData.cashbackTotal = Math.max(0, Number(req.body.cashbackTotal) || 0);
+      updateData.cashbackTotal = Math.max(
+        0,
+        Number(req.body.cashbackTotal) - removedMembershipCashback || 0,
+      );
     }
     if (req.body?.membershipDiscount !== undefined) {
       updateData.membershipDiscount = Math.max(

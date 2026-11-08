@@ -18,8 +18,8 @@ export const BOOKING_MESSAGES = {
   BUSY: 'Another booking for this space is being processed. Please try again.',
 };
 
-const FULL_DAY_START = 9 * 60;
-const FULL_DAY_END = 21 * 60;
+const FULL_DAY_START = 6 * 60;
+const FULL_DAY_END = 24 * 60;
 const MAX_RANGE_DAYS = 400;
 const LOCK_TTL_MS = 15000;
 const LOCK_WAIT_MS = 5000;
@@ -105,7 +105,9 @@ export const daysBetweenKeys = (fromKey, toKey) => {
 };
 
 export const toMinutes = value => {
-  const m = TIME_RE.exec(String(value || '').trim());
+  const raw = String(value || '').trim();
+  if (raw === '24:00') return 24 * 60;
+  const m = TIME_RE.exec(raw);
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 };
 
