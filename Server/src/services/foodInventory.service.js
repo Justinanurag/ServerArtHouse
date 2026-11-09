@@ -45,6 +45,10 @@ const productFields = (food, existing) => ({
   foodId: food._id,
   foodInventoryActive: true,
   applyMembershipDiscount: food.applyMembershipDiscount !== false,
+  lowStockAlertLevel:
+    food.lowStockAlertLevel == null || food.lowStockAlertLevel === ''
+      ? null
+      : Math.max(0, Number(food.lowStockAlertLevel) || 0),
 });
 
 /**

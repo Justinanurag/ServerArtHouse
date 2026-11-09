@@ -46,6 +46,12 @@ const foodSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+    /** Null means this food has no low-stock alert. */
+    lowStockAlertLevel: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
     /** Off = charge full price. On = apply the customer's membership discount. */
     applyMembershipDiscount: {
       type: Boolean,

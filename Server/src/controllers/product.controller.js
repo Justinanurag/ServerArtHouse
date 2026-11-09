@@ -1094,7 +1094,10 @@ export const getProducts = async (req, res) => {
       sortDir: sortDirRaw,
       includeStats,
       cspEnrollmentId: cspEnrollmentIdRaw,
+      stock: stockRaw,
     } = req.query;
+
+    const lowStockOnly = String(stockRaw || '').trim().toLowerCase() === 'low';
 
     const clauses = [{ foodInventoryActive: { $ne: false } }];
 
@@ -1178,16 +1181,72 @@ export const getProducts = async (req, res) => {
         sortField,
         sortDir,
         wantStats,
+        stock: lowStockOnly ? 'low' : 'all',
       },
       async () => {
-        const [totalCount, rows, stats] = await Promise.all([
-          Product.countDocuments(query),
-          Product.find(query)
+        const listProducts = async () => {
+          if (!lowStockOnly) {
+            const [totalCount, rows] = await Promise.all([
+              Product.countDocuments(query),
+              Product.find(query)
+                .select(PRODUCT_LIST_SELECT)
+                .sort(sort)
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            ]);
+            return {total: totalCount, products: rows};
+          }
+
+          const candidates = await Product.find({
+            $and: [
+              query,
+              {lowStockAlertLevel: {$ne: null}},
+              {itemType: {$ne: 'service'}},
+              {type: {$ne: 'service'}},
+            ],
+          })
             .select(PRODUCT_LIST_SELECT)
-            .sort(sort)
-            .skip(skip)
-            .limit(limit)
-            .lean(),
+            .lean();
+          if (!candidates.length) return {total: 0, products: []};
+
+          const names = [
+            ...new Set(candidates.flatMap((product) => getProductStockNames(product))),
+          ];
+          const stockMap = await computeStockByProductNames({names});
+          const matched = candidates.filter((product) => {
+            const level = Number(product.lowStockAlertLevel);
+            if (!Number.isFinite(level) || level < 0) return false;
+            const qty = sumStockForNames(stockMap, getProductStockNames(product));
+            return qty <= level;
+          });
+          matched.sort((a, b) => {
+            const av = a?.[sortField];
+            const bv = b?.[sortField];
+            if (av == null && bv == null) return 0;
+            if (av == null) return 1;
+            if (bv == null) return -1;
+            const aTime = av instanceof Date ? av.getTime() : NaN;
+            const bTime = bv instanceof Date ? bv.getTime() : NaN;
+            let diff = 0;
+            if (Number.isFinite(aTime) || Number.isFinite(bTime)) {
+              diff = (aTime || 0) - (bTime || 0);
+            } else if (typeof av === 'number' || typeof bv === 'number') {
+              diff = (Number(av) || 0) - (Number(bv) || 0);
+            } else {
+              diff = String(av).localeCompare(String(bv));
+            }
+            if (diff !== 0) return diff * sortDir;
+            return String(a?._id || '').localeCompare(String(b?._id || '')) * sortDir;
+          });
+          return {
+            total: matched.length,
+            products: matched.slice(skip, skip + limit),
+          };
+        };
+
+        const [listed, stats] = await Promise.all([
+          listProducts(),
           wantStats
             ? Product.aggregate([
                 {$match: query},
@@ -1211,7 +1270,7 @@ export const getProducts = async (req, res) => {
               ])
             : Promise.resolve([]),
         ]);
-        return {total: totalCount, products: rows, statsAgg: stats};
+        return {total: listed.total, products: listed.products, statsAgg: stats};
       },
       value =>
         Boolean(value) &&
@@ -1270,8 +1329,11 @@ export const getProducts = async (req, res) => {
     if (wantStats) {
       const row = Array.isArray(statsAgg) ? statsAgg[0] : null;
       const categories = Array.isArray(row?.categories) ? row.categories : [];
+      const catalogTotal = lowStockOnly
+        ? await Product.countDocuments(query)
+        : total;
       payload.stats = {
-        totalProducts: total,
+        totalProducts: catalogTotal,
         totalStockQty: Number(row?.totalStockQty || 0),
         inStockCount: Number(row?.inStockCount || 0),
         outOfStockCount: Number(row?.outOfStockCount || 0),

@@ -45,6 +45,13 @@ export const uploadFoodImage = multer({
   limits: {fileSize: 5 * 1024 * 1024},
 });
 
+const readFoodLowStockAlert = value => {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return null;
+  return num;
+};
+
 const buildFoodPayload = (body = {}, imageUrl) => {
   const name = String(body.name ?? '').trim();
   const payload = {
@@ -63,6 +70,7 @@ const buildFoodPayload = (body = {}, imageUrl) => {
       body.manageInventory === '1' ||
       body.manageInventory === 'Yes',
     description: String(body.description ?? '').trim(),
+    lowStockAlertLevel: readFoodLowStockAlert(body.lowStockAlertLevel),
     isVeg: body.isVeg === true || body.isVeg === 'true' || body.isVeg === '1',
     // Available → Active, Not Available → Inactive
     status:
