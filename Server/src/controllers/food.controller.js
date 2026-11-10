@@ -54,6 +54,11 @@ const readFoodLowStockAlert = value => {
 
 const buildFoodPayload = (body = {}, imageUrl) => {
   const name = String(body.name ?? '').trim();
+  const manageInventory =
+    body.manageInventory === true ||
+    body.manageInventory === 'true' ||
+    body.manageInventory === '1' ||
+    body.manageInventory === 'Yes';
   const payload = {
     name,
     category: String(body.category ?? 'Snacks').trim() || 'Snacks',
@@ -64,13 +69,11 @@ const buildFoodPayload = (body = {}, imageUrl) => {
     unit: String(body.unit ?? 'Plate').trim() || 'Plate',
     isPackaged:
       body.isPackaged === true || body.isPackaged === 'true' || body.isPackaged === '1',
-    manageInventory:
-      body.manageInventory === true ||
-      body.manageInventory === 'true' ||
-      body.manageInventory === '1' ||
-      body.manageInventory === 'Yes',
+    manageInventory,
     description: String(body.description ?? '').trim(),
-    lowStockAlertLevel: readFoodLowStockAlert(body.lowStockAlertLevel),
+    lowStockAlertLevel: manageInventory
+      ? readFoodLowStockAlert(body.lowStockAlertLevel)
+      : null,
     isVeg: body.isVeg === true || body.isVeg === 'true' || body.isVeg === '1',
     // Available → Active, Not Available → Inactive
     status:

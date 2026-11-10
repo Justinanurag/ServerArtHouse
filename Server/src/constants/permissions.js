@@ -96,6 +96,7 @@ export const PERMISSIONS = Object.freeze({
   MEMBERSHIP_PLAN_READ: 'membership_plan.read',
   MEMBERSHIP_PLAN_MANAGE: 'membership_plan.manage',
   CATEGORY_MANAGE: 'category.manage',
+  SEGMENT_CREATE: 'segment.create',
 
   // Network
   CUSTOMER_READ: 'customer.read',
@@ -223,6 +224,7 @@ export const PERMISSION_CATALOG = Object.freeze([
   {key: PERMISSIONS.MEMBERSHIP_PLAN_READ, module: 'catalogue', label: 'View membership plans'},
   {key: PERMISSIONS.MEMBERSHIP_PLAN_MANAGE, module: 'catalogue', label: 'Manage membership plans'},
   {key: PERMISSIONS.CATEGORY_MANAGE, module: 'catalogue', label: 'Manage categories'},
+  {key: PERMISSIONS.SEGMENT_CREATE, module: 'catalogue', label: 'Manage segments'},
 
   // Network
   {key: PERMISSIONS.CUSTOMER_READ, module: 'network', label: 'View customers'},

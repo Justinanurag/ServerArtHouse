@@ -77,6 +77,7 @@ export const DEFAULT_ROLES = Object.freeze([
       P.MEMBERSHIP_PLAN_READ,
       P.MEMBERSHIP_PLAN_MANAGE,
       P.CATEGORY_MANAGE,
+      P.SEGMENT_CREATE,
     ],
   },
   {

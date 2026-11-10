@@ -248,6 +248,42 @@ const storage = multer.diskStorage({
 
 export const upload = multer({ storage });
 
+const readProductSegments = body => {
+  let raw = body?.segments;
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      raw = [];
+    }
+  }
+  if (Array.isArray(raw)) {
+    const seen = new Set();
+    const rows = [];
+    for (const row of raw) {
+      const segmentId = String(row?.segmentId || row?.id || row?._id || '').trim();
+      const name = String(row?.name || row?.segment || '').trim();
+      if (!segmentId && !name) continue;
+      const key = `${segmentId}|${name}`.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({segmentId, name});
+    }
+    return rows;
+  }
+  const segmentId = String(body?.segmentId || '').trim();
+  const name = String(body?.segment || '').trim();
+  if (!segmentId && !name) return [];
+  return [{segmentId, name}];
+};
+
+const applyProductSegments = (target, body) => {
+  const rows = readProductSegments(body);
+  target.segments = rows;
+  target.segment = rows.map(row => row.name).filter(Boolean).join(', ');
+  target.segmentId = rows[0]?.segmentId || '';
+};
+
 //create product 
 export const createProduct = async (req, res) => {
   try {
@@ -262,6 +298,8 @@ export const createProduct = async (req, res) => {
       barCode,
       category,
       subCategory,
+      segment,
+      segmentId,
       stockQty,
       stockStatus,
       primaryUnit,
@@ -465,6 +503,14 @@ export const createProduct = async (req, res) => {
       barCode,
       category,
       subCategory,
+      ...(() => {
+        const rows = readProductSegments({segment, segmentId, segments: req.body.segments});
+        return {
+          segments: rows,
+          segment: rows.map(row => row.name).filter(Boolean).join(', '),
+          segmentId: rows[0]?.segmentId || '',
+        };
+      })(),
       stockQty: 0,
       stockStatus: "out_of_stock",
       primaryUnit: itemType === "service" ? primaryUnit || "" : "",
@@ -1027,6 +1073,9 @@ const PRODUCT_LIST_SELECT = [
   'barCode',
   'category',
   'subCategory',
+  'segment',
+  'segmentId',
+  'segments',
   'primaryUnit',
   'description',
   'discountType',
@@ -1557,6 +1606,8 @@ export const updateProduct = async (req, res) => {
       barCode,
       category,
       subCategory,
+      segment,
+      segmentId,
       stockQty,
       stockStatus,
       primaryUnit,
@@ -1662,6 +1713,9 @@ export const updateProduct = async (req, res) => {
     existingProduct.brandName = brandName ?? existingProduct.brandName;
     existingProduct.category = category ?? existingProduct.category;
     existingProduct.subCategory = subCategory ?? existingProduct.subCategory;
+    if (segment !== undefined || segmentId !== undefined || req.body.segments !== undefined) {
+      applyProductSegments(existingProduct, req.body);
+    }
     // Stock qty/status come from purchases/sales movements — do not overwrite from product form
     existingProduct.primaryUnit = primaryUnit ?? existingProduct.primaryUnit;
     existingProduct.description = description ?? existingProduct.description;

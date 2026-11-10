@@ -624,6 +624,11 @@ export const createSpaceBooking = async (req, res) => {
       );
     }
 
+    const priceError = await enforceCatalogueSpacePrice(payload);
+    if (priceError) {
+      return res.status(400).json({success: false, message: priceError});
+    }
+
     await applyOfferToBookingPayload(payload);
     const paymentError = await bookingPaymentRejection(payload);
     if (paymentError) {
@@ -860,6 +865,35 @@ export const updateSpaceBooking = async (req, res) => {
       );
     }
 
+    const pricedPayload = {
+      ...existing.toObject(),
+      ...payload,
+      spaceId: payload.spaceId || existing.spaceId,
+      bookingDate: payload.bookingDate || existing.bookingDate,
+      startTime: payload.startTime || existing.startTime,
+      endTime: payload.endTime || existing.endTime,
+      dateMode: payload.dateMode || existing.dateMode,
+      multiDateSlots: payload.multiDateSlots || existing.multiDateSlots,
+      summarySnapshot: payload.summarySnapshot || existing.summarySnapshot,
+      spaceQty: payload.spaceQty ?? existing.spaceQty,
+      durationHours: payload.durationHours ?? existing.durationHours,
+      unitPrice: payload.unitPrice ?? existing.unitPrice,
+      lineTotal: payload.lineTotal ?? existing.lineTotal,
+      grandTotal: payload.grandTotal ?? existing.grandTotal,
+    };
+    const priceError = await enforceCatalogueSpacePrice(pricedPayload);
+    if (priceError) {
+      return res.status(400).json({success: false, message: priceError});
+    }
+    payload.unitPrice = pricedPayload.unitPrice;
+    payload.spaceDay = pricedPayload.spaceDay;
+    payload.spaceId = pricedPayload.spaceId;
+    payload.spaceName = pricedPayload.spaceName;
+    payload.spaceCode = pricedPayload.spaceCode;
+    if (pricedPayload.lineTotal != null) payload.lineTotal = pricedPayload.lineTotal;
+    if (pricedPayload.grandTotal != null) payload.grandTotal = pricedPayload.grandTotal;
+    if (pricedPayload.summarySnapshot) payload.summarySnapshot = pricedPayload.summarySnapshot;
+
     await applyOfferToBookingPayload(payload, existing);
     const paymentError = await bookingPaymentRejection(
       {
@@ -1041,29 +1075,120 @@ const paymentPosition = (grand, paid) => {
 
 const escapeName = value => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const pricedSpaceForDate = async (spaceId, wantedDay) => {
+const loadSpaceFamily = async spaceId => {
   const current = await Space.findById(spaceId)
-    .select('name category day price spaceType spaceCode')
+    .select('name category day price status spaceType spaceCode')
     .lean();
   if (!current) return null;
-  const wanted = wantedDay === 'Weekend' ? 'Weekend' : 'Weekday';
   const name = String(current.name || '').trim();
   const siblings = name
     ? await Space.find({
         name: {$regex: `^\\s*${escapeName(name)}\\s*$`, $options: 'i'},
       })
-        .select('name category day price spaceType spaceCode')
+        .select('name category day price status spaceType spaceCode')
         .lean()
     : [current];
-  const match =
-    siblings.find(row => String(row.day || '').toLowerCase() === wanted.toLowerCase()) ||
-    current;
-  const price = money(match.price);
-  return {
-    space: match,
-    dayType: wanted,
-    price: price > 0 ? price : money(current.price),
-  };
+  return {current, siblings};
+};
+
+const rateForSpaceDay = (siblings, wantedDay) => {
+  const wanted = wantedDay === 'Weekend' ? 'Weekend' : 'Weekday';
+  const match = siblings.find(
+    row => String(row.day || '').toLowerCase() === wanted.toLowerCase(),
+  );
+  if (!match || String(match.status || '').toLowerCase() === 'maintenance') {
+    return {
+      error: `${wanted} bookings are not available for this space.`,
+    };
+  }
+  return {space: match, dayType: wanted, price: money(match.price)};
+};
+
+const pricedSpaceForDate = async (spaceId, wantedDay) => {
+  const family = await loadSpaceFamily(spaceId);
+  if (!family) return null;
+  return rateForSpaceDay(family.siblings, wantedDay);
+};
+
+const enforceCatalogueSpacePrice = async payload => {
+  if (!payload?.spaceId) return null;
+  const family = await loadSpaceFamily(payload.spaceId);
+  if (!family) return 'Selected space was not found.';
+
+  const snapshot = payload.summarySnapshot || {};
+  const isDuration = Boolean(snapshot.isDurationPlan);
+  const multi =
+    payload.dateMode === 'multiple' &&
+    Array.isArray(payload.multiDateSlots) &&
+    payload.multiDateSlots.length > 0;
+  const qty = Math.max(1, Number(payload.spaceQty) || 1);
+  const slots = [];
+
+  if (multi) {
+    for (const slot of payload.multiDateSlots) {
+      const date = dateKeyFromInput(slot.date);
+      if (!date) continue;
+      const hours = Number(slot.duration) > 0 ? Number(slot.duration) : 1;
+      slots.push({date, units: hours * qty});
+    }
+  } else {
+    const date = dateKeyFromInput(
+      payload.bookingDate || payload.coworkingStartDate || snapshot.bookingDate,
+    );
+    if (!date) return null;
+    const start = toMinutes(payload.startTime);
+    const end = toMinutes(payload.endTime);
+    const hours =
+      start != null && end != null && end > start
+        ? (end - start) / 60
+        : Number(payload.durationHours) || 1;
+    const units = isDuration
+      ? Math.max(1, Number(snapshot.packageMultiplier) || 1) * qty
+      : Math.max(0, hours) * qty;
+    slots.push({date, units});
+  }
+
+  if (!slots.length) return null;
+
+  let charge = 0;
+  let primary = null;
+  for (const slot of slots) {
+    const rated = rateForSpaceDay(family.siblings, dayTypeFromKey(slot.date));
+    if (rated.error) return rated.error;
+    if (!primary) primary = rated;
+    charge += rated.price * slot.units;
+  }
+  charge = money(charge);
+
+  const clientSpace = money(
+    Array.isArray(snapshot.selectedSpaces) && snapshot.selectedSpaces.length
+      ? snapshot.selectedSpaces.reduce(
+          (sum, row) => sum + Number(row.lineTotal || 0),
+          0,
+        )
+      : Number(snapshot.spaceCharges || 0),
+  );
+  const delta = clientSpace > 0 ? money(charge - clientSpace) : 0;
+
+  payload.unitPrice = primary.price;
+  payload.spaceDay = primary.dayType;
+  payload.spaceId = String(primary.space._id);
+  payload.spaceName = primary.space.name || payload.spaceName;
+  payload.spaceCode = primary.space.spaceCode || payload.spaceCode;
+  if (clientSpace > 0) {
+    if (payload.lineTotal != null) {
+      payload.lineTotal = money(Math.max(0, Number(payload.lineTotal) + delta));
+    }
+    if (payload.grandTotal != null) {
+      payload.grandTotal = money(Math.max(0, Number(payload.grandTotal) + delta));
+    }
+    if (payload.summarySnapshot) {
+      payload.summarySnapshot.unitPrice = primary.price;
+      payload.summarySnapshot.spaceDay = primary.dayType;
+      payload.summarySnapshot.spaceCharges = charge;
+    }
+  }
+  return null;
 };
 
 const loadOpenBooking = async id => {
@@ -1098,6 +1223,7 @@ const quoteForBooking = async (booking, {bookingDate, startTime, endTime, dayTyp
       : dayTypeFromKey(dateKey);
   const priced = await pricedSpaceForDate(booking.spaceId, wanted);
   if (!priced) return {error: 'Selected space was not found.'};
+  if (priced.error) return {error: priced.error};
   const hours = money((toMinutes(endTime) - toMinutes(startTime)) / 60);
   const hourlyRate = priced.price > 0 ? priced.price : money(booking.unitPrice || 0);
   const previousAmount = bookingAmount(booking);

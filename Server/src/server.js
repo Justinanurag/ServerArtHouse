@@ -51,6 +51,7 @@ import publicInvoiceRoutes from './routes/publicInvoice.route.js';
 import allBookingRoutes from './routes/allBooking.route.js';
 import bookingOverviewRoutes from './routes/bookingOverview.route.js';
 import {checkRedisConnection} from './config/redisConnection.js';
+import segmentRoutes from './routes/segment.routes.js';
 // import activityRoutes from './routes/activity.route.js';
 
 // Load environment variables
@@ -146,6 +147,7 @@ app.use('/invoice', invoiceRoutes);
 app.use('/quotation', quotationRoutes);
 app.use('/customer', customerRoutes);
 app.use('/product', productRoutes);
+app.use('/segment',segmentRoutes);
 app.use('/services', serviceRoutes);
 app.use('/additional-services', additionalServiceRoutes);
 app.use('/api/additional-services', additionalServiceRoutes);

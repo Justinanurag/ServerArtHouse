@@ -62,6 +62,25 @@ const productSchema = new mongoose.Schema(
       trim: true,
       default: 'General',
     },
+    segment: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    segmentId: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    segments: {
+      type: [
+        {
+          segmentId: {type: String, trim: true, default: ''},
+          name: {type: String, trim: true, default: ''},
+        },
+      ],
+      default: [],
+    },
     itemType: {
       type: String,
       enum: ['product', 'service'],
