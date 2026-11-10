@@ -10,6 +10,7 @@
 export const PERMISSIONS = Object.freeze({
   // System
   DASHBOARD_READ: 'dashboard.read',
+  ACTIVITY_READ: 'activity.read',
   ACCESS_READ: 'access.read',
   ACCESS_MANAGE: 'access.manage',
   COMPANY_READ: 'company.read',
@@ -154,6 +155,7 @@ export const ALL_PERMISSIONS = Object.freeze(Object.values(PERMISSIONS));
 export const PERMISSION_CATALOG = Object.freeze([
   // System
   {key: PERMISSIONS.DASHBOARD_READ, module: 'system', label: 'View dashboard'},
+  {key: PERMISSIONS.ACTIVITY_READ, module: 'system', label: 'View activity timeline'},
   {key: PERMISSIONS.ACCESS_READ, module: 'system', label: 'View access control'},
   {key: PERMISSIONS.ACCESS_MANAGE, module: 'system', label: 'Manage roles & permissions'},
   {key: PERMISSIONS.COMPANY_READ, module: 'system', label: 'View companies'},

@@ -52,6 +52,9 @@ import allBookingRoutes from './routes/allBooking.route.js';
 import bookingOverviewRoutes from './routes/bookingOverview.route.js';
 import {checkRedisConnection} from './config/redisConnection.js';
 import segmentRoutes from './routes/segment.routes.js';
+import erpActivityRoutes from './routes/erpActivity.route.js';
+import {activityLogger, requestContext} from './middlewares/activityLogger.middleware.js';
+
 // import activityRoutes from './routes/activity.route.js';
 
 // Load environment variables
@@ -140,6 +143,9 @@ app.use(async (req, res, next) => {
     }
   }
 });
+app.use(requestContext);
+app.use(activityLogger);
+app.use('/api/activities', erpActivityRoutes);
 
 // Admin / existing ERP APIs 
 app.use('/auth', authRoutes);

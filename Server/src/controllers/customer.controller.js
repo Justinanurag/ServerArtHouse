@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 import Customer from '../models/customer.model.js';
 import Wallet from '../models/wallet.model.js';
+import Invoice from '../models/invoice.model.js';
+import SpaceBooking from '../models/spaceBooking.model.js';
+import AllBooking from '../models/allBooking.model.js';
+import ExhibitionPass from '../models/exhibition.model.js';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
@@ -466,11 +470,112 @@ const getCustomerById = async (req, res) => {
   }
 };
 
+/** Find customer IDs and mobile numbers that had any visit / booking / invoice / pass check-in today */
+const getVisitedTodayCustomerConditions = async () => {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const todayYmd = `${y}-${m}-${d}`;
+
+  const [todayInvoices, todaySpaceBookings, todayAllBookings, todayPasses] = await Promise.all([
+    Invoice.find({
+      $or: [
+        { invoiceDate: { $gte: startOfToday, $lte: endOfToday } },
+        { createdAt: { $gte: startOfToday, $lte: endOfToday } },
+      ],
+      status: { $nin: ['Cancelled', 'cancelled', 'Draft', 'draft'] },
+    })
+      .select('customerId customerPhone')
+      .lean(),
+
+    SpaceBooking.find({
+      $or: [
+        { bookingDate: { $gte: startOfToday, $lte: endOfToday } },
+        { bookingDate: todayYmd },
+        { createdAt: { $gte: startOfToday, $lte: endOfToday } },
+      ],
+      status: { $nin: ['Cancelled', 'cancelled'] },
+    })
+      .select('customerPhone')
+      .lean(),
+
+    AllBooking.find({
+      $or: [
+        { bookingDate: { $gte: startOfToday, $lte: endOfToday } },
+        { bookingDate: todayYmd },
+        { createdAt: { $gte: startOfToday, $lte: endOfToday } },
+      ],
+      status: { $nin: ['Cancelled', 'cancelled'] },
+    })
+      .select('customerId customerPhone')
+      .lean(),
+
+    ExhibitionPass.find({
+      checkedInAt: { $gte: startOfToday, $lte: endOfToday },
+      status: { $ne: 'Cancelled' },
+    })
+      .select('phone')
+      .lean(),
+  ]);
+
+  const customerIdSet = new Set();
+  const phoneSet = new Set();
+
+  for (const inv of todayInvoices) {
+    if (inv.customerId && mongoose.Types.ObjectId.isValid(inv.customerId)) {
+      customerIdSet.add(String(inv.customerId));
+    }
+    const phone = normalizeCustomerMobile(inv.customerPhone);
+    if (phone) phoneSet.add(phone);
+  }
+
+  for (const sb of todaySpaceBookings) {
+    const phone = normalizeCustomerMobile(sb.customerPhone);
+    if (phone) phoneSet.add(phone);
+  }
+
+  for (const ab of todayAllBookings) {
+    if (ab.customerId && mongoose.Types.ObjectId.isValid(ab.customerId)) {
+      customerIdSet.add(String(ab.customerId));
+    }
+    const phone = normalizeCustomerMobile(ab.customerPhone);
+    if (phone) phoneSet.add(phone);
+  }
+
+  for (const pass of todayPasses) {
+    const phone = normalizeCustomerMobile(pass.phone);
+    if (phone) phoneSet.add(phone);
+  }
+
+  const conditions = [];
+  if (customerIdSet.size > 0) {
+    conditions.push({
+      _id: {
+        $in: Array.from(customerIdSet).map(
+          id => new mongoose.Types.ObjectId(id),
+        ),
+      },
+    });
+  }
+  if (phoneSet.size > 0) {
+    conditions.push({
+      mobile: { $in: Array.from(phoneSet) },
+    });
+  }
+
+  return conditions;
+};
+
 const getCustomers = async (req, res) => {
   try {
     const search = String(req.query.search ?? '').trim();
     const fromDate = String(req.query.fromDate ?? '').trim();
     const toDate = String(req.query.toDate ?? '').trim();
+    const isVisitedToday =
+      String(req.query.visitedToday ?? '').toLowerCase() === 'true';
 
     const limit = Math.min(
       Math.max(Number(req.query.limit) || 50, 1),
@@ -481,7 +586,48 @@ const getCustomers = async (req, res) => {
     const skip = (page - 1) * limit;
     const includeTotal = String(req.query.includeTotal ?? 'true') !== 'false';
 
-    const query = buildCustomerListQuery(search);
+    // Dynamic metrics for KPI cards
+    const visitedConditions = await getVisitedTodayCustomerConditions();
+
+    const [totalCustomersCount, visitedTodayCount] = await Promise.all([
+      Customer.countDocuments({ isDeleted: { $ne: true } }),
+      visitedConditions.length > 0
+        ? Customer.countDocuments({
+            isDeleted: { $ne: true },
+            $or: visitedConditions,
+          })
+        : Promise.resolve(0),
+    ]);
+
+    // If filtering by Visited Today and no visits found today, return empty
+    if (isVisitedToday && visitedConditions.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'Customers fetched successfully.',
+        customers: [],
+        total: 0,
+        totalCustomersCount,
+        visitedTodayCount: 0,
+        limit,
+        page,
+        totalPages: 0,
+        hasMore: false,
+      });
+    }
+
+    const query = { isDeleted: { $ne: true } };
+    const andClauses = [];
+
+    if (search) {
+      const searchQuery = buildCustomerListQuery(search);
+      delete searchQuery.isDeleted;
+      andClauses.push(searchQuery);
+    }
+
+    if (isVisitedToday && visitedConditions.length > 0) {
+      andClauses.push({ $or: visitedConditions });
+    }
+
     const createdRange = {};
     if (fromDate) {
       const from = new Date(`${fromDate}T00:00:00.000`);
@@ -491,7 +637,13 @@ const getCustomers = async (req, res) => {
       const to = new Date(`${toDate}T23:59:59.999`);
       if (!Number.isNaN(to.getTime())) createdRange.$lte = to;
     }
-    if (Object.keys(createdRange).length) query.createdAt = createdRange;
+    if (Object.keys(createdRange).length) {
+      andClauses.push({ createdAt: createdRange });
+    }
+
+    if (andClauses.length > 0) {
+      query.$and = andClauses;
+    }
 
     const findQuery = Customer.find(query)
       .select(CUSTOMER_LIST_PROJECTION)
@@ -519,6 +671,8 @@ const getCustomers = async (req, res) => {
       message: 'Customers fetched successfully.',
       customers,
       total: resolvedTotal,
+      totalCustomersCount,
+      visitedTodayCount,
       limit,
       page,
       totalPages:

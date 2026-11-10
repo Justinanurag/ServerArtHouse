@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import User from '../models/auth.model.js';
 import Role from '../models/role.model.js';
 import Counter from '../models/counter.model.js';
@@ -29,6 +30,38 @@ const PROFILE_ALLOWLIST = [
 ];
 
 const isEmail = s => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s).trim());
+
+const readAuthToken = req => {
+  const header = req.headers.authorization;
+  if (header && header.startsWith('Bearer ')) return header.slice(7);
+  return req.cookies?.authToken || '';
+};
+
+const stampAuth = (req, {action, description, user, identifier}) => {
+  const raw = String(identifier || '').trim();
+  const email = user?.email || (raw.includes('@') ? raw.toLowerCase() : '');
+  const companyRef = user?.activeCompany;
+  const companyId =
+    companyRef && typeof companyRef === 'object' ? String(companyRef._id || '') : String(companyRef || '');
+  req.audit = {
+    action,
+    module: 'Authentication',
+    description,
+    resourceId: user?._id ? String(user._id) : '',
+    resourceName: user?.fullName || (email ? '' : raw),
+    resourceType: 'User',
+    userId: user?._id,
+    userName: user?.fullName || '',
+    userEmail: email,
+    actorType: user
+      ? String(user.role || '').toLowerCase() === 'admin'
+        ? 'Admin'
+        : 'Staff'
+      : 'System',
+    companyId,
+    metadata: !user && raw ? {identifier: raw.slice(0, 80)} : {},
+  };
+};
 
 /** Accepts 10-digit local or 12-digit with 91 prefix; returns E.164 +91… or null */
 const normalizePhone = input => {
@@ -121,6 +154,19 @@ const healthCheck = async (req, res) => {
 
 const logout = async (req, res) => {
   try {
+    let user = null;
+    try {
+      const token = readAuthToken(req);
+      if (token) {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET, {algorithms: ['HS256']});
+        if (decoded?.userId) {
+          user = await User.findById(decoded.userId).select('fullName email role activeCompany').lean();
+        }
+      }
+    } catch {
+      user = null;
+    }
+    stampAuth(req, {action: 'LOGOUT', description: 'Logged out', user});
     const isProd = process.env.NODE_ENV === 'production';
     res.clearCookie('authToken', {
       httpOnly: true,
@@ -222,6 +268,7 @@ const register = async (req, res) => {
     });
 
     const authUser = await buildAuthUserResponse(user);
+    stampAuth(req, {action: 'CREATE', description: 'Registered a staff account', user});
 
     return res.status(201).json({
       success: true,
@@ -267,19 +314,26 @@ const login = async (req, res) => {
       .populate('companies')
       .populate('roleId', 'name slug permissions isActive');
 
-    const invalidCreds = () =>
-      res.status(401).json({
+    const invalidCreds = found => {
+      stampAuth(req, {
+        action: 'LOGIN',
+        description: 'Failed login attempt',
+        user: found,
+        identifier: parsed.value,
+      });
+      return res.status(401).json({
         success: false,
         message: 'Invalid email/phone or password.',
       });
+    };
 
     if (!user) {
-      return invalidCreds();
+      return invalidCreds(null);
     }
 
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) {
-      return invalidCreds();
+      return invalidCreds(user);
     }
 
     const token = createTokenAndSetCookie(res, {
@@ -290,6 +344,11 @@ const login = async (req, res) => {
     });
 
     const authUser = await buildAuthUserResponse(user);
+    stampAuth(req, {
+      action: 'LOGIN',
+      description: `Logged in as ${user.fullName || 'staff'}`,
+      user,
+    });
 
     return res.status(200).json({
       success: true,
@@ -343,6 +402,11 @@ const verifyOtp = async (req, res) => {
     }
     const isValid = checkOtp(raw, otp);
     if (!isValid) {
+      stampAuth(req, {
+        action: 'LOGIN',
+        description: 'Failed OTP login',
+        identifier: String(raw),
+      });
       return res.status(400).json({
         success: false,
         message: 'Invalid or expired OTP.',
@@ -373,6 +437,11 @@ const verifyOtp = async (req, res) => {
     });
 
     const authUser = await buildAuthUserResponse(user);
+    stampAuth(req, {
+      action: 'LOGIN',
+      description: `Logged in as ${user.fullName || 'staff'}`,
+      user,
+    });
 
     return res.status(200).json({
       success: true,

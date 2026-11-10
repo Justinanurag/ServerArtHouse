@@ -13,6 +13,7 @@ const phoneVariants = phone => {
 };
 
 const hasMembership = customer => {
+  if (customer?.membershipPlanId) return true;
   const type = String(customer?.membershipType || '').trim().toLowerCase();
   return Boolean(type && !['none', 'guest', 'new'].includes(type));
 };

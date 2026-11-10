@@ -9,6 +9,12 @@ import Wallet from '../models/wallet.model.js';
 import WalletWithdrawal from '../models/walletWithdrawal.model.js';
 import {resolveTwoBuckets} from '../utils/walletBuckets.js';
 import {attachMembershipExpiry} from '../services/membershipEligibility.service.js';
+import Membership from '../models/membership.model.js';
+import Purchase from '../models/purchase.model.js';
+import PurchaseOrder from '../models/purchaseOrder.model.js';
+import Invoice from '../models/invoice.model.js';
+
+const escapeRegex = value => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const getsailorSharePercent = () => {
   const n = Number(process.env.CSP_sailor_SHARE_PERCENT ?? 70);
@@ -203,7 +209,7 @@ export const getCSP = async (req, res) => {
     const enrollments = rows.map(row => {
       const dto = toEnrollmentDto(row);
       const customerId = dto.customerId ? String(dto.customerId) : '';
-      const wallet = customerId ? walletMap.get(customerId) : null;
+    const wallet = customerId ? walletMap.get(customerId) : null;
       const buckets = resolveTwoBuckets(wallet, dto.customer);
       const sales = salesByEnrollment.get(String(row._id)) || {salesAmount: 0};
       const payoutAmount = customerId ? payoutByCustomer.get(customerId) || 0 : 0;
@@ -722,190 +728,669 @@ const emptyCspProgram = () => ({
   timeline: [],
 });
 
-const collectCspPartnerDetails = async (enrollment, {activityLimit = 8} = {}) => {
+const collectCspPartnerDetails = async (enrollment, {activityLimit = 200} = {}) => {
   const dto = toEnrollmentDto(enrollment);
-    const customerId = dto.customerId ? String(dto.customerId) : '';
-    const wallet = customerId
-      ? await Wallet.findOne({customerId})
-          .select(
-            'withdrawable nonWithdrawable affiliateBalance cashbackBalance walletAmount balanceSchema',
-          )
-          .lean()
-      : null;
-    const buckets = resolveTwoBuckets(wallet, dto.customer);
+  const customerId = dto.customerId ? String(dto.customerId) : '';
+  let customerDoc = dto.customer ? (dto.customer.toObject ? dto.customer.toObject() : {...dto.customer}) : null;
+  if (!customerDoc && customerId && mongoose.Types.ObjectId.isValid(customerId)) {
+    customerDoc = await Customer.findById(customerId)
+      .select('name mobile email walletAmount membershipType membershipPlanId membershipPurchase withdrawable affiliateBalance nonWithdrawable cashbackBalance closingBalance')
+      .lean();
+  }
+  if (customerDoc) {
+    await attachMembershipExpiry([customerDoc]);
+  }
+  let planDisplayName = customerDoc?.membershipType || '';
+  if (customerDoc?.membershipPlanId && mongoose.Types.ObjectId.isValid(String(customerDoc.membershipPlanId))) {
+    const plan = await Membership.findById(customerDoc.membershipPlanId).select('displayName planId').lean();
+    if (plan?.displayName) planDisplayName = plan.displayName;
+  }
+  const wallet = customerId
+    ? await Wallet.findOne({customerId})
+        .select(
+          'withdrawable nonWithdrawable affiliateBalance cashbackBalance walletAmount balanceSchema',
+        )
+        .lean()
+    : null;
+  const buckets = resolveTwoBuckets(wallet, dto.customer);
 
-    let application = await CspApplication.findOne({
-      enrollmentId: enrollment._id,
-    }).lean();
-    if (!application && customerId) {
-      application = await CspApplication.findOne({customerId})
-        .sort({createdAt: -1})
-        .lean();
-    }
-
-    const products = await Product.find({
-      isCsp: true,
-      cspEnrollmentId: enrollment._id,
-    })
-      .select(
-        'productName serviceName category sellingPrice stockQty discountType discountValue createdAt',
-      )
+  let application = await CspApplication.findOne({
+    enrollmentId: enrollment._id,
+  }).lean();
+  if (!application && customerId) {
+    application = await CspApplication.findOne({customerId})
       .sort({createdAt: -1})
       .lean();
+  }
 
-    const settlements = await CspSettlement.find({
-      'lines.cspEnrollmentId': enrollment._id,
-    })
-      .sort({settledAt: -1})
-      .limit(40)
-      .lean();
+  let vendor = dto.vendor ? (dto.vendor.toObject ? dto.vendor.toObject() : {...dto.vendor}) : null;
+  if (!vendor && enrollment.vendorId && mongoose.Types.ObjectId.isValid(String(enrollment.vendorId))) {
+    vendor = await Vendor.findById(enrollment.vendorId).lean();
+  }
 
-    const withdrawals = customerId
-      ? await WalletWithdrawal.find({customer: customerId})
-          .sort({createdAt: -1})
-          .limit(20)
+  const products = await Product.find({
+    isCsp: true,
+    cspEnrollmentId: enrollment._id,
+  })
+    .select(
+      'productName serviceName category sellingPrice stockQty discountType discountValue createdAt updatedAt imageUrl images',
+    )
+    .sort({createdAt: -1})
+    .lean();
+
+  const productMap = new Map();
+  const productNameMap = new Map();
+  for (const prod of products) {
+    const pId = String(prod._id);
+    productMap.set(pId, prod);
+    const pName = String(prod.productName || prod.serviceName || '').trim().toLowerCase();
+    if (pName) productNameMap.set(pName, prod);
+  }
+
+  const resolveProductImage = (prodId, prodName) => {
+    const prod = (prodId ? productMap.get(String(prodId)) : null) ||
+      (prodName ? productNameMap.get(String(prodName).trim().toLowerCase()) : null);
+    if (!prod) return null;
+    const img =
+      (typeof prod.imageUrl === 'string' && prod.imageUrl.trim()) ||
+      (Array.isArray(prod.images) &&
+        prod.images[0] &&
+        typeof prod.images[0] === 'string' &&
+        prod.images[0].trim()) ||
+      '';
+    return img || null;
+  };
+
+  // 1. Purchases & Purchase Orders for CSP
+  const partnerNames = [
+    dto.displayName,
+    customerDoc?.name,
+    vendor?.name,
+    vendor?.companyName,
+    vendor?.brandName,
+    application?.brandName,
+  ]
+    .map(s => String(s || '').trim())
+    .filter(Boolean);
+
+  const partnerPhones = [
+    dto.mobile,
+    customerDoc?.mobile,
+    vendor?.mobile,
+    vendor?.businessPhoneNumber,
+  ]
+    .map(s => String(s || '').replace(/\D/g, '').slice(-10))
+    .filter(p => p.length >= 10);
+
+  const purchaseClauses = [];
+  for (const name of [...new Set(partnerNames)]) {
+    purchaseClauses.push({ supplierName: new RegExp(`^${escapeRegex(name)}$`, 'i') });
+  }
+  for (const phone of [...new Set(partnerPhones)]) {
+    purchaseClauses.push({ supplierContact: new RegExp(phone.split('').join('\\D*')) });
+  }
+
+  let purchases = [];
+  let purchaseOrders = [];
+  if (purchaseClauses.length > 0) {
+    [purchases, purchaseOrders] = await Promise.all([
+      Purchase.find({ $or: purchaseClauses }).sort({ invoiceDate: -1, createdAt: -1 }).lean(),
+      PurchaseOrder.find({ $or: purchaseClauses }).sort({ invoiceDate: -1, createdAt: -1 }).lean(),
+    ]);
+  }
+
+  // 2. Sales & Settlements
+  const settlements = await CspSettlement.find({
+    'lines.cspEnrollmentId': enrollment._id,
+  })
+    .sort({settledAt: -1, createdAt: -1})
+    .lean();
+
+  const settlementInvoiceIds = settlements
+    .map(s => s.invoiceId)
+    .filter(id => id && mongoose.Types.ObjectId.isValid(String(id)));
+
+  const [settlementInvoices, directCspInvoices] = await Promise.all([
+    settlementInvoiceIds.length
+      ? Invoice.find({ _id: { $in: settlementInvoiceIds } })
+          .select('invoiceNumber invoiceCode customerName customerPhone status invoiceDate createdAt items')
           .lean()
-      : [];
+      : [],
+    Invoice.find({
+      'items.cspEnrollmentId': enrollment._id,
+      status: { $ne: 'cancelled' },
+    })
+      .select('invoiceNumber invoiceCode customerName customerPhone status invoiceDate createdAt items')
+      .lean(),
+  ]);
 
-    const salesByProduct = new Map();
-    const activity = [];
-    let productsSold = 0;
-    let salesAmount = 0;
-    let totalEarnings = 0;
+  const invoiceMap = new Map();
+  const invoiceCodeMap = new Map();
+  for (const inv of [...settlementInvoices, ...directCspInvoices]) {
+    invoiceMap.set(String(inv._id), inv);
+    if (inv.invoiceCode) invoiceCodeMap.set(String(inv.invoiceCode), inv);
+  }
 
-    for (const settlement of settlements) {
-      if (settlement.status === 'reversed') continue;
+  const salesByProduct = new Map();
+  const timelineEvents = [];
+  const salesList = [];
+  const processedInvoiceLineKeys = new Set();
+  const successfulInvoiceCodes = new Set();
+
+  let totalSalesAmount = 0;
+  let totalProductsSold = 0;
+  let totalEarnings = 0;
+
+  // Process settlements
+  for (const settlement of settlements) {
+    if (settlement.status === 'reversed') {
       for (const line of settlement.lines || []) {
-        if (String(line.cspEnrollmentId || '') !== String(enrollment._id)) {
-          continue;
-        }
+        if (String(line.cspEnrollmentId || '') !== String(enrollment._id)) continue;
+        const inv = invoiceMap.get(String(settlement.invoiceId)) || invoiceCodeMap.get(String(settlement.invoiceCode));
+        const prodName = textOrEmpty(line.productName) || 'CSP Product';
         const lineSales = Number(line.lineBaseAmount) || 0;
-        const lineEarnings = Number(line.sailorAmount) || 0;
-        productsSold += 1;
-        salesAmount += lineSales;
-        totalEarnings += lineEarnings;
-        const key = String(line.productId || line.productName || 'product');
-        const current = salesByProduct.get(key) || {
-          sold: 0,
-          sales: 0,
-        };
-        current.sold += 1;
-        current.sales += lineSales;
-        salesByProduct.set(key, current);
-        activity.push({
-          id: `sale-${settlement._id}-${activity.length}`,
-          kind: 'sale',
-          title: textOrEmpty(line.productName) || 'Product sale',
+        timelineEvents.push({
+          id: `reversed-${settlement._id}-${timelineEvents.length}`,
+          kind: 'cancellation',
+          type: 'sale_reversed',
+          title: `Sale Reversed: ${prodName}`,
+          subtitle: inv?.customerName ? `Customer: ${inv.customerName}` : 'Settlement reversed',
+          idRef: textOrEmpty(settlement.invoiceCode),
+          productName: prodName,
+          customerName: inv?.customerName || '',
+          quantity: 1,
+          unitPrice: roundMoney(lineSales),
           amount: roundMoney(lineSales),
-          at: settlement.settledAt || settlement.createdAt || null,
-          detail: textOrEmpty(settlement.invoiceCode),
-          status: 'settled',
+          date: settlement.updatedAt || settlement.settledAt || settlement.createdAt,
+          status: 'reversed',
+          details: {
+            invoiceCode: settlement.invoiceCode,
+            customerName: inv?.customerName || '',
+            reason: 'Settlement reversed',
+          },
         });
       }
+      continue;
     }
 
-    const pendingStatuses = new Set(['requested', 'under_review', 'approved']);
-    let pendingPayout = 0;
-    let completedPayout = 0;
-    const payouts = withdrawals.map(row => {
-      const amount = Number(row.amount) || 0;
-      if (pendingStatuses.has(row.status)) pendingPayout += amount;
-      if (row.status === 'paid') completedPayout += amount;
-      activity.push({
-        id: `payout-${row._id}`,
-        kind: 'payout',
-        title: 'Payout',
-        amount: roundMoney(amount),
-        at: row.paidAt || row.reviewedAt || row.createdAt || null,
-        detail: textOrEmpty(row.method).toUpperCase(),
-        status: row.status || '',
-      });
-      return {
-        id: String(row._id),
-        amount: roundMoney(amount),
-        status: row.status || '',
-        method: textOrEmpty(row.method),
-        at: row.paidAt || row.createdAt || null,
+    const inv = invoiceMap.get(String(settlement.invoiceId)) || invoiceCodeMap.get(String(settlement.invoiceCode));
+
+    for (const line of settlement.lines || []) {
+      if (String(line.cspEnrollmentId || '') !== String(enrollment._id)) continue;
+
+      const lineSales = Number(line.lineBaseAmount) || 0;
+      const lineEarnings = Number(line.sailorAmount) || 0;
+      const prodIdStr = line.productId ? String(line.productId) : '';
+      const prodName = textOrEmpty(line.productName) || 'CSP Product';
+
+      const matchedItem = inv?.items?.find(i =>
+        (prodIdStr && String(i.productId) === prodIdStr) ||
+        (i.productName && i.productName.trim().toLowerCase() === prodName.toLowerCase())
+      );
+
+      const qty = Number(matchedItem?.qty) || 1;
+      const unitPrice = Number(matchedItem?.unitPrice) || roundMoney(lineSales / qty);
+      const saleDate = settlement.settledAt || inv?.invoiceDate || inv?.createdAt || settlement.createdAt;
+      const customerName = inv?.customerName || 'Customer';
+      const customerPhone = inv?.customerPhone || '';
+      const invoiceCode = settlement.invoiceCode || inv?.invoiceCode || 'Sale';
+      const image = resolveProductImage(prodIdStr, prodName);
+
+      const lineKey = `${invoiceCode}_${prodIdStr || prodName.toLowerCase()}`;
+      processedInvoiceLineKeys.add(lineKey);
+
+      totalProductsSold += qty;
+      totalSalesAmount += lineSales;
+      totalEarnings += lineEarnings;
+      successfulInvoiceCodes.add(invoiceCode);
+
+      const prodKey = prodIdStr || prodName.toLowerCase();
+      const current = salesByProduct.get(prodKey) || { sold: 0, sales: 0 };
+      current.sold += qty;
+      current.sales += lineSales;
+      salesByProduct.set(prodKey, current);
+
+      const saleRecord = {
+        id: `sale-${settlement._id}-${salesList.length}`,
+        invoiceCode,
+        invoiceNumber: inv?.invoiceNumber || invoiceCode,
+        customerName,
+        customerPhone,
+        productId: prodIdStr || null,
+        productName: prodName,
+        image,
+        category: matchedItem?.category || (prodIdStr ? productMap.get(prodIdStr)?.category : '') || '',
+        quantity: qty,
+        unitPrice: roundMoney(unitPrice),
+        totalAmount: roundMoney(lineSales),
+        sailorEarnings: roundMoney(lineEarnings),
+        saleDate,
+        status: 'completed',
       };
+      salesList.push(saleRecord);
+
+      timelineEvents.push({
+        id: `timeline-sale-${settlement._id}-${timelineEvents.length}`,
+        kind: 'sale',
+        type: 'product_sold',
+        title: `Product Sold: ${prodName}`,
+        subtitle: customerName ? `Sold to ${customerName}` : 'Customer sale',
+        idRef: invoiceCode,
+        productName: prodName,
+        customerName,
+        quantity: qty,
+        unitPrice: roundMoney(unitPrice),
+        amount: roundMoney(lineSales),
+        sailorEarnings: roundMoney(lineEarnings),
+        date: saleDate,
+        status: 'completed',
+        image,
+        details: {
+          invoiceCode,
+          customerName,
+          customerPhone,
+          quantity: qty,
+          unitPrice: roundMoney(unitPrice),
+          totalAmount: roundMoney(lineSales),
+          sailorEarnings: roundMoney(lineEarnings),
+          status: 'completed',
+        },
+      });
+    }
+  }
+
+  // Process direct CSP invoices not yet settled
+  for (const inv of directCspInvoices) {
+    if (inv.status === 'cancelled') continue;
+    const invoiceCode = inv.invoiceCode || `INV-${inv.invoiceNumber}`;
+
+    for (const item of inv.items || []) {
+      if (String(item.cspEnrollmentId || '') !== String(enrollment._id)) continue;
+      const prodIdStr = item.productId ? String(item.productId) : '';
+      const prodName = textOrEmpty(item.productName) || 'CSP Product';
+      const lineKey = `${invoiceCode}_${prodIdStr || prodName.toLowerCase()}`;
+      if (processedInvoiceLineKeys.has(lineKey)) continue;
+      processedInvoiceLineKeys.add(lineKey);
+
+      const qty = Number(item.qty) || 1;
+      const unitPrice = Number(item.unitPrice) || 0;
+      const lineSales = Number(item.lineTotal) || roundMoney(qty * unitPrice);
+      const lineEarnings = Number(item.cspsailorAmount) || roundMoney(lineSales * 0.7);
+      const saleDate = inv.invoiceDate || inv.createdAt;
+      const customerName = inv.customerName || 'Customer';
+      const customerPhone = inv.customerPhone || '';
+      const image = resolveProductImage(prodIdStr, prodName);
+
+      totalProductsSold += qty;
+      totalSalesAmount += lineSales;
+      totalEarnings += lineEarnings;
+      successfulInvoiceCodes.add(invoiceCode);
+
+      const prodKey = prodIdStr || prodName.toLowerCase();
+      const current = salesByProduct.get(prodKey) || { sold: 0, sales: 0 };
+      current.sold += qty;
+      current.sales += lineSales;
+      salesByProduct.set(prodKey, current);
+
+      const saleRecord = {
+        id: `sale-inv-${inv._id}-${salesList.length}`,
+        invoiceCode,
+        invoiceNumber: inv.invoiceNumber || invoiceCode,
+        customerName,
+        customerPhone,
+        productId: prodIdStr || null,
+        productName: prodName,
+        image,
+        category: item.category || '',
+        quantity: qty,
+        unitPrice: roundMoney(unitPrice),
+        totalAmount: roundMoney(lineSales),
+        sailorEarnings: roundMoney(lineEarnings),
+        saleDate,
+        status: 'completed',
+      };
+      salesList.push(saleRecord);
+
+      timelineEvents.push({
+        id: `timeline-sale-inv-${inv._id}-${timelineEvents.length}`,
+        kind: 'sale',
+        type: 'product_sold',
+        title: `Product Sold: ${prodName}`,
+        subtitle: customerName ? `Sold to ${customerName}` : 'Customer sale',
+        idRef: invoiceCode,
+        productName: prodName,
+        customerName,
+        quantity: qty,
+        unitPrice: roundMoney(unitPrice),
+        amount: roundMoney(lineSales),
+        sailorEarnings: roundMoney(lineEarnings),
+        date: saleDate,
+        status: 'completed',
+        image,
+        details: {
+          invoiceCode,
+          customerName,
+          customerPhone,
+          quantity: qty,
+          unitPrice: roundMoney(unitPrice),
+          totalAmount: roundMoney(lineSales),
+          sailorEarnings: roundMoney(lineEarnings),
+          status: 'completed',
+        },
+      });
+    }
+  }
+
+  // 3. Process Purchases
+  for (const p of purchases) {
+    const isCancelled = String(p.status || '').toLowerCase() === 'cancelled';
+    const pItems = Array.isArray(p.items) ? p.items : [];
+    const totalQty = pItems.reduce((acc, item) => acc + (Number(item.qty) || 0), 0) || 1;
+    const prodName = pItems.length > 0 ? pItems.map(i => i.productName).filter(Boolean).join(', ') : 'Purchase item';
+    const unitPrice = pItems.length === 1 ? (Number(pItems[0].unitPrice) || 0) : roundMoney((Number(p.amount) || 0) / totalQty);
+    const pDate = p.invoiceDate || p.vendorDate || p.createdAt;
+    const pIdRef = p.invoiceNumber || String(p._id);
+
+    if (isCancelled) {
+      timelineEvents.push({
+        id: `timeline-purchase-cancel-${p._id}`,
+        kind: 'cancellation',
+        type: 'purchase_cancellation',
+        title: `Purchase Cancelled: ${pIdRef}`,
+        subtitle: prodName,
+        idRef: pIdRef,
+        productName: prodName,
+        customerName: p.supplierName || '',
+        quantity: totalQty,
+        unitPrice: roundMoney(unitPrice),
+        amount: roundMoney(p.amount),
+        date: p.updatedAt || pDate,
+        status: 'cancelled',
+        details: {
+          invoiceNumber: p.invoiceNumber,
+          supplierName: p.supplierName,
+          items: pItems.map(i => ({
+            productName: i.productName,
+            qty: Number(i.qty) || 0,
+            unitPrice: Number(i.unitPrice) || 0,
+            lineTotal: Number(i.lineTotal) || 0,
+          })),
+          notes: p.notes || '',
+          status: 'cancelled',
+        },
+      });
+    } else {
+      timelineEvents.push({
+        id: `timeline-purchase-${p._id}`,
+        kind: 'purchase',
+        type: 'purchase_created',
+        title: `Purchase Created: ${pIdRef}`,
+        subtitle: prodName,
+        idRef: pIdRef,
+        productName: prodName,
+        customerName: p.supplierName || '',
+        quantity: totalQty,
+        unitPrice: roundMoney(unitPrice),
+        amount: roundMoney(p.amount),
+        date: pDate,
+        status: p.status || 'completed',
+        details: {
+          invoiceNumber: p.invoiceNumber,
+          supplierName: p.supplierName,
+          paidAmount: roundMoney(p.paidAmount),
+          dueAmount: roundMoney(p.dueAmount),
+          items: pItems.map(i => ({
+            productName: i.productName,
+            qty: Number(i.qty) || 0,
+            unitPrice: Number(i.unitPrice) || 0,
+            lineTotal: Number(i.lineTotal) || 0,
+          })),
+          paymentMode: p.paymentMode || '',
+          notes: p.notes || '',
+          status: p.status,
+        },
+      });
+    }
+  }
+
+  // 4. Process Purchase Orders
+  for (const po of purchaseOrders) {
+    const isCancelled = String(po.status || po.orderStatus || '').toLowerCase() === 'cancelled';
+    const poItems = Array.isArray(po.items) ? po.items : [];
+    const totalQty = poItems.reduce((acc, item) => acc + (Number(item.qty) || 0), 0) || 1;
+    const prodName = poItems.length > 0 ? poItems.map(i => i.productName).filter(Boolean).join(', ') : 'Purchase order item';
+    const unitPrice = poItems.length === 1 ? (Number(poItems[0].unitPrice) || 0) : roundMoney((Number(po.amount) || 0) / totalQty);
+    const poDate = po.invoiceDate || po.createdAt;
+    const poIdRef = po.invoiceNumber || String(po._id);
+
+    if (isCancelled) {
+      timelineEvents.push({
+        id: `timeline-po-cancel-${po._id}`,
+        kind: 'cancellation',
+        type: 'order_cancellation',
+        title: `PO Cancelled: ${poIdRef}`,
+        subtitle: prodName,
+        idRef: poIdRef,
+        productName: prodName,
+        customerName: po.supplierName || '',
+        quantity: totalQty,
+        unitPrice: roundMoney(unitPrice),
+        amount: roundMoney(po.amount),
+        date: po.updatedAt || poDate,
+        status: 'cancelled',
+        details: {
+          invoiceNumber: po.invoiceNumber,
+          supplierName: po.supplierName,
+          items: poItems.map(i => ({
+            productName: i.productName,
+            qty: Number(i.qty) || 0,
+            unitPrice: Number(i.unitPrice) || 0,
+            lineTotal: Number(i.lineTotal) || 0,
+          })),
+          notes: po.notes || '',
+          status: 'cancelled',
+        },
+      });
+    } else {
+      timelineEvents.push({
+        id: `timeline-po-${po._id}`,
+        kind: 'purchase',
+        type: 'purchase_order',
+        title: `Purchase Order: ${poIdRef}`,
+        subtitle: prodName,
+        idRef: poIdRef,
+        productName: prodName,
+        customerName: po.supplierName || '',
+        quantity: totalQty,
+        unitPrice: roundMoney(unitPrice),
+        amount: roundMoney(po.amount),
+        date: poDate,
+        status: po.orderStatus || po.status || 'pending',
+        details: {
+          invoiceNumber: po.invoiceNumber,
+          supplierName: po.supplierName,
+          items: poItems.map(i => ({
+            productName: i.productName,
+            qty: Number(i.qty) || 0,
+            unitPrice: Number(i.unitPrice) || 0,
+            lineTotal: Number(i.lineTotal) || 0,
+          })),
+          notes: po.notes || '',
+          status: po.orderStatus || po.status,
+        },
+      });
+    }
+  }
+
+  // 5. Stock Updates (Product additions & inventory)
+  for (const prod of products) {
+    const prodName = textOrEmpty(prod.productName) || textOrEmpty(prod.serviceName) || 'Product';
+    const stockQty = Number(prod.stockQty) || 0;
+    const image = resolveProductImage(String(prod._id), prodName);
+
+    if (prod.createdAt) {
+      timelineEvents.push({
+        id: `timeline-stock-${prod._id}`,
+        kind: 'stock_add',
+        type: 'product_added',
+        title: `Stock Added: ${prodName}`,
+        subtitle: prod.category ? `Category: ${prod.category} · Initial stock: ${stockQty}` : `Initial stock: ${stockQty}`,
+        idRef: String(prod._id),
+        productName: prodName,
+        quantity: stockQty,
+        unitPrice: roundMoney(prod.sellingPrice),
+        amount: roundMoney(stockQty * (Number(prod.sellingPrice) || 0)),
+        date: prod.createdAt,
+        status: 'available',
+        image,
+        details: {
+          productId: String(prod._id),
+          productName: prodName,
+          category: prod.category || '',
+          stockQty,
+          sellingPrice: roundMoney(prod.sellingPrice),
+        },
+      });
+    }
+  }
+
+  // 6. Payouts / Withdrawals
+  const withdrawals = customerId
+    ? await WalletWithdrawal.find({customer: customerId})
+        .sort({createdAt: -1})
+        .limit(50)
+        .lean()
+    : [];
+
+  const pendingStatuses = new Set(['requested', 'under_review', 'approved']);
+  let pendingPayout = 0;
+  let completedPayout = 0;
+  const payouts = withdrawals.map(row => {
+    const amount = Number(row.amount) || 0;
+    if (pendingStatuses.has(row.status)) pendingPayout += amount;
+    if (row.status === 'paid') completedPayout += amount;
+
+    const isPaid = row.status === 'paid';
+    const isRejected = row.status === 'rejected' || row.status === 'cancelled';
+
+    timelineEvents.push({
+      id: `timeline-payout-${row._id}`,
+      kind: isRejected ? 'cancellation' : 'payout',
+      type: isPaid ? 'payout_completed' : isRejected ? 'payout_rejected' : 'payout_requested',
+      title: isPaid
+        ? `Payout Completed: ${textOrEmpty(row.method).toUpperCase() || 'BANK'}`
+        : isRejected
+        ? `Payout Rejected: ${textOrEmpty(row.method).toUpperCase() || 'BANK'}`
+        : `Payout Requested: ${textOrEmpty(row.method).toUpperCase() || 'BANK'}`,
+      subtitle: `Status: ${row.status || 'pending'}`,
+      idRef: String(row._id),
+      amount: roundMoney(amount),
+      date: row.paidAt || row.reviewedAt || row.createdAt || null,
+      status: row.status || 'pending',
+      details: {
+        amount: roundMoney(amount),
+        method: textOrEmpty(row.method),
+        status: row.status || '',
+      },
     });
 
-    activity.sort((a, b) => {
-      const left = a.at ? new Date(a.at).getTime() : 0;
-      const right = b.at ? new Date(b.at).getTime() : 0;
-      return right - left;
-    });
-
-    const prositeUrl = textOrEmpty(application?.prositeUrl);
-    const website =
-      textOrEmpty(dto.vendor?.website) ||
-      (prositeUrl ? `https://${prositeUrl.replace(/^https?:\/\//i, '')}` : '');
-
-    const timeline = activity.slice(0, activityLimit);
     return {
-      partner: {
-        fullName: textOrEmpty(dto.displayName),
-        email:
-          textOrEmpty(dto.customer?.email) ||
-          textOrEmpty(dto.vendor?.email) ||
-          textOrEmpty(dto.vendor?.businessEmail),
-        phone: textOrEmpty(dto.mobile),
-        website,
-        prositeUrl,
-        status: textOrEmpty(dto.status) || 'inactive',
-        joinDate: enrollment.createdAt || null,
-        brandName:
-          textOrEmpty(application?.brandName) ||
-          textOrEmpty(dto.vendor?.companyName) ||
-          textOrEmpty(dto.vendor?.name),
-        categories: Array.isArray(application?.categories)
-          ? application.categories.filter(Boolean)
-          : [],
-        membershipType: textOrEmpty(dto.customer?.membershipType),
-        membershipEndDate: dto.customer?.membershipEndDate || null,
-        membershipExpired: Boolean(dto.customer?.membershipExpired),
-        sailorSharePercent:
-          dto.sailorSharePercent == null ? null : Number(dto.sailorSharePercent),
-        platformSharePercent:
-          dto.platformSharePercent == null
-            ? null
-            : Number(dto.platformSharePercent),
-      },
-      performance: {
-        productsSold,
-        totalEarnings: roundMoney(totalEarnings),
-        salesAmount: roundMoney(salesAmount),
-        pendingPayout: roundMoney(pendingPayout),
-        completedPayout: roundMoney(completedPayout),
-        availableBalance: roundMoney(buckets.withdrawable),
-        totalLeads: null,
-      },
-      products: products.map(product => {
-        const key = String(product._id);
-        const sales = salesByProduct.get(key) || {sold: 0, sales: 0};
-        return {
-          id: key,
-          name:
-            textOrEmpty(product.productName) ||
-            textOrEmpty(product.serviceName),
-          category: textOrEmpty(product.category),
-          price: roundMoney(product.sellingPrice),
-          stock: Number(product.stockQty) || 0,
-          sold: sales.sold,
-          sales: roundMoney(sales.sales),
-          createdAt: product.createdAt || null,
-        };
-      }),
-      payouts,
-      sales: timeline.filter(row => row.kind === 'sale'),
-      timeline,
-      activity: timeline,
+      id: String(row._id),
+      amount: roundMoney(amount),
+      status: row.status || '',
+      method: textOrEmpty(row.method),
+      at: row.paidAt || row.createdAt || null,
     };
+  });
+
+  // Sort Sales by saleDate descending
+  salesList.sort((a, b) => {
+    const left = a.saleDate ? new Date(a.saleDate).getTime() : 0;
+    const right = b.saleDate ? new Date(b.saleDate).getTime() : 0;
+    return right - left;
+  });
+
+  // Sort Timeline events by date descending
+  timelineEvents.sort((a, b) => {
+    const left = a.date ? new Date(a.date).getTime() : 0;
+    const right = b.date ? new Date(b.date).getTime() : 0;
+    return right - left;
+  });
+
+  const prositeUrl = textOrEmpty(application?.prositeUrl);
+  const website =
+    textOrEmpty(dto.vendor?.website) ||
+    (prositeUrl ? `https://${prositeUrl.replace(/^https?:\/\//i, '')}` : '');
+
+  const timeline = activityLimit > 0 ? timelineEvents.slice(0, activityLimit) : timelineEvents;
+
+  return {
+    partner: {
+      fullName: textOrEmpty(dto.displayName),
+      email:
+        textOrEmpty(dto.customer?.email) ||
+        textOrEmpty(dto.vendor?.email) ||
+        textOrEmpty(dto.vendor?.businessEmail),
+      phone: textOrEmpty(dto.mobile),
+      website,
+      prositeUrl,
+      status: textOrEmpty(dto.status) || 'inactive',
+      joinDate: enrollment.createdAt || null,
+      brandName:
+        textOrEmpty(application?.brandName) ||
+        textOrEmpty(dto.vendor?.companyName) ||
+        textOrEmpty(dto.vendor?.name),
+      categories: Array.isArray(application?.categories)
+        ? application.categories.filter(Boolean)
+        : [],
+      membershipType: textOrEmpty(planDisplayName || customerDoc?.membershipType),
+      membershipEndDate: customerDoc?.membershipEndDate || null,
+      membershipExpired: Boolean(customerDoc?.membershipExpired),
+      sailorSharePercent:
+        dto.sailorSharePercent == null ? null : Number(dto.sailorSharePercent),
+      platformSharePercent:
+        dto.platformSharePercent == null
+          ? null
+          : Number(dto.platformSharePercent),
+    },
+    performance: {
+      productsSold: totalProductsSold,
+      totalEarnings: roundMoney(totalEarnings),
+      salesAmount: roundMoney(totalSalesAmount),
+      successfulTransactionsCount: successfulInvoiceCodes.size,
+      pendingPayout: roundMoney(pendingPayout),
+      completedPayout: roundMoney(completedPayout),
+      availableBalance: roundMoney(buckets.withdrawable),
+      totalLeads: null,
+    },
+    products: products.map(product => {
+      const key = String(product._id);
+      const nameKey = String(product.productName || product.serviceName || '').trim().toLowerCase();
+      const sales = salesByProduct.get(key) || salesByProduct.get(nameKey) || {sold: 0, sales: 0};
+      const image = resolveProductImage(key, product.productName || product.serviceName);
+      return {
+        id: key,
+        name:
+          textOrEmpty(product.productName) ||
+          textOrEmpty(product.serviceName),
+        category: textOrEmpty(product.category),
+        price: roundMoney(product.sellingPrice),
+        stock: Number(product.stockQty) || 0,
+        sold: sales.sold,
+        sales: roundMoney(sales.sales),
+        image: image || null,
+        imageUrl: image || null,
+        images: Array.isArray(product.images) ? product.images : (image ? [image] : []),
+        createdAt: product.createdAt || null,
+      };
+    }),
+    payouts,
+    sales: salesList,
+    timeline,
+    activity: timeline,
+  };
 };
 
-/**
- * CSP products, sales, payouts, and timeline for one customer.
- * Used by Customer 360. Returns an empty program when they are not enrolled.
- */
 export const cspProgramForCustomer = async customerId => {
   if (!customerId || !mongoose.Types.ObjectId.isValid(String(customerId))) {
     return emptyCspProgram();
