@@ -1,16 +1,21 @@
 import ErpActivity from '../models/erpActivity.model.js';
-import {readCompanyId, sanitizeChanges, sanitizeValue} from '../utils/activity.util.js';
+import {readCompanyId, sanitizeChanges, sanitizeValue, sourceFromRequest} from '../utils/activity.util.js';
 
 const actorFromRequest = req => {
   const staff = req?.staff;
   const user = req?.user;
   if (staff || user?.userId) {
-    const role = String(staff?.role || user?.role || '').toLowerCase();
+    const roleName = staff?.roleId?.name || staff?.role || user?.role || '';
+    const role = String(roleName).toLowerCase();
+    const source = sourceFromRequest(req);
+    let actorType = role === 'admin' ? 'Admin' : 'Staff';
+    if (source === 'POS') actorType = 'POS';
     return {
       userId: staff?._id || user?.userId || null,
       userName: staff?.fullName || user?.name || '',
       userEmail: staff?.email || user?.email || '',
-      actorType: role === 'admin' ? 'Admin' : 'Staff',
+      userRole: String(roleName),
+      actorType,
       companyId: readCompanyId(staff) || readCompanyId(user),
     };
   }
@@ -20,10 +25,11 @@ const actorFromRequest = req => {
       userName: req.customer.name || req.customer.fullName || '',
       userEmail: req.customer.email || '',
       actorType: 'Customer',
+      userRole: 'Customer',
       companyId: readCompanyId(req.customer),
     };
   }
-  return {userId: null, userName: '', userEmail: '', actorType: 'System', companyId: ''};
+  return {userId: null, userName: '', userEmail: '', userRole: 'System', actorType: 'System', companyId: ''};
 };
 
 const toDoc = (entry, req) => {
@@ -35,6 +41,11 @@ const toDoc = (entry, req) => {
     userName: entry.userName || actor.userName,
     userEmail: entry.userEmail || actor.userEmail,
     actorType: entry.actorType || actor.actorType,
+    userRole: entry.userRole || actor.userRole || '',
+    source: entry.source || sourceFromRequest(req),
+    relatedName: entry.relatedName || '',
+    amount: entry.amount ?? null,
+    transactionType: entry.transactionType || '',
     companyId: entry.companyId || actor.companyId || '',
     metadata: sanitizeValue(entry.metadata || {}),
     changes: sanitizeChanges(entry.changes),

@@ -3,7 +3,11 @@ const SENSITIVE = /password|passwd|secret|token|cookie|authorization|pin|cvv|car
 export const readCompanyId = source => {
   const ref = source?.activeCompany || source?.companyId;
   if (!ref) return '';
-  if (typeof ref === 'object') return String(ref._id || '');
+  if (typeof ref === 'object') {
+    if (ref._id) return String(ref._id);
+    const text = typeof ref.toString === 'function' ? ref.toString() : '';
+    return text && text !== '[object Object]' ? text : '';
+  }
   return String(ref);
 };
 
@@ -131,7 +135,152 @@ const CRITICAL = new Set([
   'Inventory',
   'Wallet',
   'Sales Returns',
+  'Gift Cards',
+  'Food',
+  'Space Bookings',
   'Authentication',
 ]);
 
 export const isCriticalModule = moduleName => CRITICAL.has(moduleName);
+
+const DOC_KEYS = [
+  'invoiceNumber',
+  'invoiceCode',
+  'quotationNumber',
+  'purchaseNumber',
+  'poNumber',
+  'orderNumber',
+  'bookingCode',
+  'billNumber',
+  'couponCode',
+  'productName',
+  'foodName',
+  'spaceName',
+  'name',
+  'fullName',
+  'title',
+];
+const PARTY_KEYS = ['customerName', 'vendorName', 'supplierName', 'guestName'];
+const AMOUNT_KEYS = ['grandTotal', 'totalAmount', 'paidAmount', 'amountPaid', 'amount'];
+const SAFE_META = [
+  'customerName',
+  'vendorName',
+  'supplierName',
+  'invoiceNumber',
+  'quotationNumber',
+  'paymentMode',
+  'paymentStatus',
+  'status',
+  'grandTotal',
+  'totalAmount',
+  'amount',
+  'paidAmount',
+];
+
+const asObjects = payload => {
+  const list = [];
+  const push = value => {
+    if (value && typeof value === 'object' && !Array.isArray(value) && !Buffer.isBuffer(value)) {
+      list.push(value);
+    }
+  };
+  push(payload);
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    for (const value of Object.values(payload)) {
+      push(value);
+      if (Array.isArray(value) && value.length === 1) push(value[0]);
+    }
+  }
+  return list;
+};
+
+const firstText = (objects, keys) => {
+  for (const obj of objects) {
+    for (const key of keys) {
+      if (SENSITIVE.test(key)) continue;
+      const value = obj[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+  }
+  return '';
+};
+
+const firstAmount = objects => {
+  for (const obj of objects) {
+    for (const key of AMOUNT_KEYS) {
+      const value = Number(obj[key]);
+      if (Number.isFinite(value) && value !== 0) return value;
+    }
+  }
+  return null;
+};
+
+const formatInr = amount =>
+  `₹${Number(amount).toLocaleString('en-IN', {maximumFractionDigits: 2})}`;
+
+export const transactionTypeFor = (moduleName, action, pathname) => {
+  const path = String(pathname || '').toLowerCase();
+  if (action === 'PAYMENT' || path.includes('payment')) return 'payment';
+  if (action === 'REFUND' || path.includes('refund')) return 'refund';
+  if (moduleName === 'Wallet') return 'wallet';
+  if (String(moduleName).includes('Booking')) return 'booking';
+  if (moduleName === 'Membership' || moduleName === 'Subscriptions') return 'membership';
+  if (moduleName === 'Inventory') return 'inventory';
+  return '';
+};
+
+export const sourceFromRequest = req => {
+  const explicit = String(req?.headers?.['x-client-source'] || '').trim();
+  if (explicit) return explicit.slice(0, 40);
+  const path = String(req?.originalUrl || '').toLowerCase();
+  if (path.startsWith('/api/customer') || path.startsWith('/public/')) return 'Customer Portal';
+  if (path.includes('/pos') || String(req?.body?.mode || '').toUpperCase() === 'POS') return 'POS';
+  if (!req?.user && !req?.staff && !req?.customer) return 'System';
+  if (/mobile|android|iphone|ipad/i.test(String(req?.headers?.['user-agent'] || ''))) return 'Mobile';
+  return 'Web';
+};
+
+const VERB = {
+  CREATE: 'Created',
+  UPDATE: 'Updated',
+  DELETE: 'Deleted',
+  PAYMENT: 'Recorded a payment on',
+  CANCEL: 'Cancelled',
+  APPROVE: 'Approved',
+  REFUND: 'Refunded',
+  LOGIN: 'Signed in',
+  LOGOUT: 'Signed out',
+};
+
+export const describeActivity = ({payload, body, action, moduleName, failed, pathname}) => {
+  const objects = asObjects(payload).concat(asObjects(body));
+  const resourceName = firstText(objects, DOC_KEYS);
+  const relatedName = firstText(objects, PARTY_KEYS);
+  const amount = firstAmount(objects);
+  const resourceId = firstText(objects, ['_id', 'id']);
+  const verb = VERB[action] || action || 'Updated';
+  const moduleLabel = String(moduleName || 'record').toLowerCase();
+  let description = resourceName ? `${verb} ${moduleLabel} ${resourceName}` : `${verb} ${moduleLabel}`;
+  if (relatedName && relatedName !== resourceName) description += ` for ${relatedName}`;
+  if (amount != null) description += ` — ${formatInr(amount)}`;
+  if (failed) description = `Failed: ${description}`;
+  const metadata = {};
+  for (const obj of objects) {
+    for (const key of SAFE_META) {
+      if (metadata[key] != null || SENSITIVE.test(key)) continue;
+      const value = obj[key];
+      if (value == null || value === '' || typeof value === 'object') continue;
+      metadata[key] = value;
+    }
+  }
+  if (amount != null) metadata.totalAmount = amount;
+  return {
+    description,
+    resourceName,
+    resourceId,
+    relatedName,
+    amount,
+    transactionType: transactionTypeFor(moduleName, action, pathname),
+    metadata,
+  };
+};

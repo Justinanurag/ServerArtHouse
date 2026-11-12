@@ -1,6 +1,6 @@
 import {randomUUID} from 'crypto';
 import {logActivities, logActivity} from '../services/activityLog.service.js';
-import {actionFromRequest, isCriticalModule, moduleFromPath} from '../utils/activity.util.js';
+import {actionFromRequest, describeActivity, isCriticalModule, moduleFromPath} from '../utils/activity.util.js';
 
 const NAME_KEYS = [
   'productName',
@@ -67,18 +67,31 @@ const buildEntry = (req, res, payload) => {
   const audit = req.audit || {};
   const moduleName = audit.module || moduleFromPath(req.originalUrl);
   const action = actionFromRequest(req.method, req.originalUrl, audit.action);
+  const failed = res.statusCode >= 400;
   const extracted = resourceFromPayload(payload);
-  const message = typeof payload?.message === 'string' ? payload.message.trim() : '';
+  const described = describeActivity({
+    payload,
+    body: req.body,
+    action,
+    moduleName,
+    failed,
+    pathname: req.originalUrl,
+  });
+  const genericMessage = typeof payload?.message === 'string' ? payload.message.trim() : '';
+  const useGeneric = genericMessage && !/success|failed|error/i.test(genericMessage);
   return {
     action,
     module: moduleName,
-    description: audit.description || message || `${action} ${moduleName}`,
-    resourceId: String(audit.resourceId || extracted.resourceId || idFromPath(req.originalUrl) || ''),
-    resourceName: String(audit.resourceName || extracted.resourceName || ''),
+    description: audit.description || (useGeneric ? genericMessage : described.description),
+    resourceId: String(audit.resourceId || extracted.resourceId || described.resourceId || idFromPath(req.originalUrl) || ''),
+    resourceName: String(audit.resourceName || described.resourceName || extracted.resourceName || ''),
     resourceType: String(audit.resourceType || moduleName),
-    status: res.statusCode >= 400 ? 'failure' : 'success',
+    relatedName: String(audit.relatedName || described.relatedName || ''),
+    amount: audit.amount ?? described.amount,
+    transactionType: audit.transactionType || described.transactionType || '',
+    status: failed ? 'failure' : 'success',
     changes: audit.changes || [],
-    metadata: audit.metadata || {},
+    metadata: {...described.metadata, ...(audit.metadata || {})},
     userId: audit.userId,
     userName: audit.userName,
     userEmail: audit.userEmail,

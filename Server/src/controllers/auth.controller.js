@@ -41,8 +41,11 @@ const stampAuth = (req, {action, description, user, identifier}) => {
   const raw = String(identifier || '').trim();
   const email = user?.email || (raw.includes('@') ? raw.toLowerCase() : '');
   const companyRef = user?.activeCompany;
-  const companyId =
-    companyRef && typeof companyRef === 'object' ? String(companyRef._id || '') : String(companyRef || '');
+  const companyText =
+    companyRef && typeof companyRef === 'object'
+      ? String(companyRef._id || (typeof companyRef.toString === 'function' ? companyRef.toString() : ''))
+      : String(companyRef || '');
+  const companyId = companyText === '[object Object]' ? '' : companyText;
   req.audit = {
     action,
     module: 'Authentication',
@@ -53,6 +56,7 @@ const stampAuth = (req, {action, description, user, identifier}) => {
     userId: user?._id,
     userName: user?.fullName || '',
     userEmail: email,
+    userRole: user?.roleId?.name || user?.role || (user ? 'Staff' : 'System'),
     actorType: user
       ? String(user.role || '').toLowerCase() === 'admin'
         ? 'Admin'

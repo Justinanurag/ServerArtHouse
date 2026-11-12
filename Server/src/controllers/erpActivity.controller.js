@@ -24,6 +24,8 @@ const buildQuery = req => {
   if (req.query.status === 'success' || req.query.status === 'failure') {
     query.status = req.query.status;
   }
+  if (req.query.source) query.source = String(req.query.source);
+  if (req.query.transactionType) query.transactionType = String(req.query.transactionType);
 
   const from = readDate(req.query.from);
   const to = readDate(req.query.to);
@@ -36,7 +38,14 @@ const buildQuery = req => {
   const search = String(req.query.search || '').trim();
   if (search) {
     const pattern = new RegExp(escapeRegex(search), 'i');
-    and.push({$or: [{resourceName: pattern}, {userName: pattern}, {description: pattern}]});
+    and.push({
+      $or: [
+        {resourceName: pattern},
+        {userName: pattern},
+        {description: pattern},
+        {relatedName: pattern},
+      ],
+    });
   }
   if (and.length) query.$and = and;
   return query;
@@ -71,12 +80,17 @@ const dateLabel = value =>
   }).format(new Date(value));
 
 const groupByDate = items => {
+  const today = dateKey(new Date());
+  const yesterdayDate = new Date();
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterday = dateKey(yesterdayDate);
   const groups = [];
   for (const item of items) {
     const key = dateKey(item.createdAt);
     const last = groups[groups.length - 1];
+    const prefix = key === today ? 'Today — ' : key === yesterday ? 'Yesterday — ' : '';
     if (!last || last.date !== key) {
-      groups.push({date: key, label: dateLabel(item.createdAt), items: [item]});
+      groups.push({date: key, label: `${prefix}${dateLabel(item.createdAt)}`, items: [item]});
     } else {
       last.items.push(item);
     }
@@ -167,14 +181,32 @@ export const activityStats = async (req, res) => {
           createdAt: {...(query.createdAt || {}), $gte: rangeStart, $lte: rangeEnd},
         });
 
-    const [total, created, updatedOrDeleted] = await Promise.all([
+    const todayBase = {...query};
+    delete todayBase.createdAt;
+    const [total, created, updated, payments, activeUserIds] = await Promise.all([
       ErpActivity.countDocuments(query),
       countAction(query, ['CREATE']),
-      countAction(query, ['UPDATE', 'DELETE']),
+      countAction(query, ['UPDATE']),
+      ErpActivity.countDocuments({
+        ...query,
+        $or: [{action: 'PAYMENT'}, {transactionType: 'payment'}],
+      }),
+      ErpActivity.distinct('userId', {
+        ...todayBase,
+        userId: {$ne: null},
+        createdAt: {$gte: start, $lte: end},
+      }),
     ]);
     return res.json({
       success: true,
-      stats: {total, today: todayCount, created, updatedOrDeleted},
+      stats: {
+        total,
+        today: todayCount,
+        activeUsers: activeUserIds.length,
+        created,
+        updated,
+        payments,
+      },
     });
   } catch (error) {
     return sendError(res, error);

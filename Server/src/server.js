@@ -63,7 +63,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config({path: path.join(__dirname, '.env')});
 
 const app = express();
-const PORT =  process.env.PORT||3000;
+const PORT = process.env.PORT || 3000;
 
 // Behind Vercel's proxy: use X-Forwarded-For so rate limits apply per visitor, not globally.
 app.set('trust proxy', 1);

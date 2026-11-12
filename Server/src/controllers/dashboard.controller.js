@@ -142,6 +142,23 @@ const membershipAbbrev = label => {
   return (letters.slice(0, 2) || 'XX').toUpperCase();
 };
 
+const normPlan = value => String(value || '').trim().toLowerCase();
+
+const subscriptionMatchesPlan = (sub, plan) => {
+  const planId = normPlan(plan.planId);
+  const name = normPlan(plan.displayName);
+  const fields = [sub.membershipType, sub.planId, sub.membershipPlan]
+    .map(normPlan)
+    .filter(Boolean);
+  if (fields.some(field => field === planId || field === name)) return true;
+  const planCode = membershipAbbrev(plan.displayName) || membershipAbbrev(plan.planId);
+  const subCode =
+    membershipAbbrev(sub.membershipType) ||
+    membershipAbbrev(sub.planId) ||
+    membershipAbbrev(sub.membershipPlan);
+  return Boolean(planCode && subCode && planCode === subCode);
+};
+
 /** Same amount rule as SubscriptionScreen footer (grandTotal ?? amount). */
 const subscriptionReceived = sub => {
   const status = String(sub.status ?? '').toLowerCase();
@@ -168,6 +185,13 @@ export const getDashboardSummary = async (req, res) => {
     const invoiceDateFilter = orDateQuery(['invoiceDate', 'createdAt'], from, to);
     // Match GET /subscriptions: membership revenue is keyed only on invoiceDate
     const subscriptionDateFilter = dateQuery('invoiceDate', from, to);
+    // Activation is when the subscription was created, in India local time.
+    const activationRange = {};
+    if (fromDate) activationRange.$gte = new Date(`${fromDate}T00:00:00.000+05:30`);
+    if (toDate) activationRange.$lte = new Date(`${toDate}T23:59:59.999+05:30`);
+    const activationDateFilter = Object.keys(activationRange).length
+      ? {createdAt: activationRange}
+      : {};
     const customerDateFilter = dateQuery('createdAt', from, to);
     const vendorDateFilter = dateQuery('createdAt', from, to);
     const cspDateFilter = dateQuery('createdAt', from, to);
@@ -178,12 +202,13 @@ export const getDashboardSummary = async (req, res) => {
     const [
       invoices,
       subscriptions,
+      activatedMemberships,
       customerCount,
       vendorCount,
       cspCount,
       purchases,
       expenses,
-      membershipCustomers,
+      membershipPlans,
     ] = await Promise.all([
       Invoice.find({
         ...invoiceDateFilter,
@@ -198,6 +223,12 @@ export const getDashboardSummary = async (req, res) => {
         .select(
           'grandTotal amount status membershipType membershipPlan planId invoiceDate startDate createdAt',
         )
+        .lean(),
+      Subscription.find({
+        ...activationDateFilter,
+        status: {$in: ['active', 'completed']},
+      })
+        .select('membershipType membershipPlan planId status createdAt')
         .lean(),
       Customer.countDocuments(customerDateFilter),
       Vendor.countDocuments(vendorDateFilter),
@@ -214,12 +245,9 @@ export const getDashboardSummary = async (req, res) => {
       })
         .select('amount status date createdAt')
         .lean(),
-      // For membership breakdown prefer period subscriptions; fallback customers if none
-      Customer.find({
-        ...customerDateFilter,
-        membershipType: {$exists: true, $nin: [null, '', 'none', 'None']},
-      })
-        .select('membershipType')
+      Membership.find({status: {$in: ['Active', 'active']}})
+        .select('planId displayName priority')
+        .sort({priority: 1, displayName: 1})
         .lean(),
     ]);
 
@@ -266,72 +294,27 @@ export const getDashboardSummary = async (req, res) => {
 
     // Membership revenue from subscriptions in period (invoiceDate only — same as /subscriptions)
     revenue.Membership = 0;
-    const membershipByCode = new Map();
-    let membershipCount = 0;
     for (const sub of subscriptions) {
-      const received = subscriptionReceived(sub);
-      revenue.Membership += received;
+      revenue.Membership += subscriptionReceived(sub);
+    }
+
+    const usedCodes = new Set();
+    const buckets = membershipPlans.map(plan => {
+      let code =
+        membershipAbbrev(plan.displayName) ||
+        membershipAbbrev(plan.planId) ||
+        String(plan.planId || 'PL').slice(0, 6).toUpperCase();
+      if (usedCodes.has(code)) {
+        code = String(plan.displayName || plan.planId || code).slice(0, 12);
+      }
+      usedCodes.add(code);
+      return {code, count: 0, plan};
+    });
+    let membershipCount = 0;
+    for (const sub of activatedMemberships) {
       membershipCount += 1;
-      const code =
-        membershipAbbrev(sub.membershipType) ||
-        membershipAbbrev(sub.planId) ||
-        membershipAbbrev(sub.membershipPlan) ||
-        'XX';
-      membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
-    }
-
-    // If no subscriptions in range but customers were created with plans, show those
-    if (membershipCount === 0 && membershipCustomers.length > 0) {
-      for (const c of membershipCustomers) {
-        const code = membershipAbbrev(c.membershipType);
-        if (!code) continue;
-        membershipCount += 1;
-        membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
-      }
-    }
-
-    // For all date filters: ensure membership is always displayed on the dashboard
-    if (membershipCount === 0) {
-      const allActiveSubs = await Subscription.find({
-        status: { $nin: ['Cancelled', 'Expired'] },
-      }).lean();
-      for (const sub of allActiveSubs) {
-        membershipCount += 1;
-        const code =
-          membershipAbbrev(sub.membershipType) ||
-          membershipAbbrev(sub.planId) ||
-          membershipAbbrev(sub.membershipPlan) ||
-          'XX';
-        membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
-      }
-      if (membershipCount === 0) {
-        const allMembershipCustomers = await Customer.find({
-          membershipType: { $exists: true, $nin: [null, '', 'none', 'None'] },
-        })
-          .select('membershipType')
-          .lean();
-        for (const c of allMembershipCustomers) {
-          const code = membershipAbbrev(c.membershipType);
-          if (!code) continue;
-          membershipCount += 1;
-          membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
-        }
-      }
-      if (membershipCount === 0) {
-        const activePlans = await Membership.find({
-          status: { $nin: ['Inactive', 'inactive', 'archived'] },
-        })
-          .select('planId displayName')
-          .lean();
-        for (const plan of activePlans) {
-          const code =
-            membershipAbbrev(plan.displayName) ||
-            membershipAbbrev(plan.planId) ||
-            'PL';
-          membershipByCode.set(code, (membershipByCode.get(code) || 0) + 1);
-        }
-        membershipCount = activePlans.length;
-      }
+      const bucket = buckets.find(row => subscriptionMatchesPlan(sub, row.plan));
+      if (bucket) bucket.count += 1;
     }
 
     revenue.total =
@@ -351,10 +334,7 @@ export const getDashboardSummary = async (req, res) => {
       0,
     );
 
-    const membershipBreakdown = [...membershipByCode.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([code, count]) => ({code, count}));
+    const membershipBreakdown = buckets.map(({code, count}) => ({code, count}));
 
     return res.status(200).json({
       success: true,
