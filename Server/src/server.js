@@ -41,6 +41,7 @@ import sentAnnouncement from './routes/sendAnnouncement.router.js';
 import expenceRoutes from './routes/expence.router.js';
 import expenceCategoryRoutes from './routes/expenceCategory.router.js';
 import dashboardRoutes from './routes/dashboard.route.js';
+import insightsAnalyticsRoutes from './routes/insightsAnalytics.route.js';
 import staffCommissionRoutes from './routes/staffCommission.route.js'
 import leadRouters from './routes/lead.Route.js';
 import additionalServiceRoutes from './routes/additionalService.route.js';
@@ -197,6 +198,7 @@ app.use('/api/announcement', sentAnnouncement);
 app.use('/api/expences', expenceRoutes);
 app.use('/api/expences/category', expenceCategoryRoutes);
 app.use('/dashboard', dashboardRoutes);
+app.use('/analytics', insightsAnalyticsRoutes);
 app.use('/api/commission',staffCommissionRoutes);
 app.use('/api/lead',leadRouters);
 

@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import SpaceBooking from '../models/spaceBooking.model.js';
 import AllBooking from '../models/allBooking.model.js';
+import Invoice from '../models/invoice.model.js';
 import Customer from '../models/customer.model.js';
 import Wallet from '../models/wallet.model.js';
 import {appendTransaction} from './wallet.controller.js';
@@ -174,12 +175,54 @@ const buildKpis = rows => {
 
 const modelFor = kind => (kind === 'space' ? SpaceBooking : AllBooking);
 
+/** The invoice is the billed total. A saved booking total can still be gross or double-discounted. */
+const applyInvoiceTotals = async bookings => {
+  const list = Array.isArray(bookings) ? bookings : [];
+  const ids = [];
+  const codes = [];
+  for (const booking of list) {
+    if (booking.invoiceId && mongoose.Types.ObjectId.isValid(String(booking.invoiceId))) {
+      ids.push(booking.invoiceId);
+    }
+    const code = String(booking.invoiceCode || '').trim();
+    if (code) codes.push(code);
+  }
+  if (!ids.length && !codes.length) return list;
+  const invoices = await Invoice.find({
+    $or: [
+      ...(ids.length ? [{_id: {$in: ids}}] : []),
+      ...(codes.length ? [{invoiceCode: {$in: codes}}] : []),
+    ],
+  })
+    .select('invoiceCode grandTotal pendingAmount paymentBreakdown')
+    .lean();
+  const byId = new Map(invoices.map(invoice => [String(invoice._id), invoice]));
+  const byCode = new Map(invoices.map(invoice => [String(invoice.invoiceCode || ''), invoice]));
+  for (const booking of list) {
+    if (String(booking.status || '') === 'Draft') continue;
+    const invoice =
+      byId.get(String(booking.invoiceId || '')) ||
+      byCode.get(String(booking.invoiceCode || ''));
+    if (!invoice || !(Number(invoice.grandTotal) > 0)) continue;
+    const total = roundMoney(invoice.grandTotal);
+    const paid = roundMoney(invoice.paymentBreakdown?.paidAmount);
+    const dueRaw = roundMoney(
+      invoice.pendingAmount ?? invoice.paymentBreakdown?.dueAmount ?? 0,
+    );
+    booking.grandTotal = total;
+    booking.paidAmount = dueRaw < 1 ? total : paid;
+    booking.dueAmount = dueRaw < 1 ? 0 : dueRaw;
+  }
+  return list;
+};
+
 export const getBookingOverview = async (req, res) => {
   try {
     const [spaces, fulls] = await Promise.all([
       SpaceBooking.find().lean(),
       AllBooking.find().lean(),
     ]);
+    await applyInvoiceTotals(spaces);
     const all = [
       ...spaces.map(doc => mapBooking(doc, 'space')),
       ...fulls.map(doc => mapBooking(doc, 'full')),

@@ -661,6 +661,23 @@ const normalizeInvoiceItem = (item, previous = {}) => {
   };
 };
 
+const normalizeSpaceOffer = value => {
+  if (!value || typeof value !== 'object') return undefined;
+  const discount = Math.max(0, Number(value.discount) || 0);
+  const freeHours = Math.max(0, Number(value.freeHours) || 0);
+  const minimumHours = Math.max(0, Number(value.minimumHours) || 0);
+  const ruleLabel = String(value.ruleLabel || '').trim();
+  if (!(discount > 0) && !(freeHours > 0) && !ruleLabel) return undefined;
+  return {
+    offerName: String(value.offerName || '').trim(),
+    ruleLabel,
+    minimumHours,
+    freeHours,
+    chargeableHours: Math.max(0, Number(value.chargeableHours) || 0),
+    discount,
+  };
+};
+
 const createInvoice = async (req, res) => {
   try {
     const {
@@ -691,6 +708,7 @@ const createInvoice = async (req, res) => {
       membershipType,
       invoiceBy,
       verifiedAt,
+      spaceOffer,
     } = req.body;
 
     console.log(req.body);
@@ -1045,6 +1063,7 @@ const createInvoice = async (req, res) => {
       membershipType: String(membershipType ?? customer?.membershipType ?? '')
         .trim()
         .toLowerCase(),
+      spaceOffer: normalizeSpaceOffer(spaceOffer),
       cashbackTotal: cashbackAfterMembershipRules,
       pendingAmount: normalizedPendingAmount,
       mode: String(mode ?? 'Cash'),
@@ -1256,7 +1275,7 @@ const getInvoices=async(req,res)=>{
           .sort({createdAt: -1})
           .limit(limit)
           .select(
-            'customerName customerPhone pendingAmount paymentBreakdown paymentStatus status invoiceCode createdAt updatedAt grandTotal returnedAmount createdBy mode salesPersonName invoiceDate items coupon referral manualDiscount membershipDiscount membershipType cashbackTotal discountTotal subTotal extraCharges invoiceBy notes',
+            'customerName customerPhone pendingAmount paymentBreakdown paymentStatus status invoiceCode createdAt updatedAt grandTotal returnedAmount createdBy mode salesPersonName invoiceDate items coupon referral manualDiscount membershipDiscount membershipType cashbackTotal discountTotal subTotal extraCharges invoiceBy notes spaceOffer',
           )
           .lean();
         return res.status(200).json({

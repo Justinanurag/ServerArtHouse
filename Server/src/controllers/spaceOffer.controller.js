@@ -215,12 +215,16 @@ export const applyOfferToBookingPayload = async (payload, existing = null) => {
 
   if (hoursUnchanged && existing) {
     const stored = offerMoney(existing.offerDiscount || 0);
-    const client = offerMoney(payload.offerDiscount || 0);
-    const delta = offerMoney(stored - client);
-    if (payload.lineTotal != null) payload.lineTotal = offerMoney(Math.max(0, payload.lineTotal - delta));
-    if (payload.grandTotal != null) payload.grandTotal = offerMoney(Math.max(0, payload.grandTotal - delta));
-    if (payload.paidAmount != null && payload.grandTotal != null) {
-      payload.dueAmount = offerMoney(Math.max(0, payload.grandTotal - payload.paidAmount));
+    // A later payment update sends the payable total and often omits the offer.
+    // Treating a missing offer as ₹0 subtracted the free-hour discount again.
+    if (payload.offerDiscount !== undefined) {
+      const client = offerMoney(payload.offerDiscount || 0);
+      const delta = offerMoney(stored - client);
+      if (payload.lineTotal != null) payload.lineTotal = offerMoney(Math.max(0, payload.lineTotal - delta));
+      if (payload.grandTotal != null) payload.grandTotal = offerMoney(Math.max(0, payload.grandTotal - delta));
+      if (payload.paidAmount != null && payload.grandTotal != null) {
+        payload.dueAmount = offerMoney(Math.max(0, payload.grandTotal - payload.paidAmount));
+      }
     }
     payload.offerDiscount = stored;
     payload.offerSnapshot = existing.offerSnapshot || null;

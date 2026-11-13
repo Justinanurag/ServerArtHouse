@@ -257,6 +257,15 @@ const invoiceSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    /** Space-booking offer applied to this invoice, printed on the PDF. */
+    spaceOffer: {
+      offerName: {type: String, trim: true, default: ''},
+      ruleLabel: {type: String, trim: true, default: ''},
+      minimumHours: {type: Number, min: 0, default: 0},
+      freeHours: {type: Number, min: 0, default: 0},
+      chargeableHours: {type: Number, min: 0, default: 0},
+      discount: {type: Number, min: 0, default: 0},
+    },
     /** Membership cashback credited to wallet for this invoice (₹). */
     cashbackTotal: {
       type: Number,
