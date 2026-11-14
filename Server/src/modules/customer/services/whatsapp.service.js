@@ -1796,6 +1796,46 @@ export const sendWhatsAppTemplateMessage = async ({
   return { delivered: true, messageId: data?.messages?.[0]?.id };
 };
 
+const whatsAppParam = value =>
+  String(value ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/ {5,}/g, '    ')
+    .trim() || '-';
+
+/** Sends the approved space_booking_quotation template (20 body variables). */
+export const sendSpaceBookingQuotationWhatsApp = async ({to, bodyParams = []}) => {
+  const templateName = String(
+    process.env.WHATSAPP_SPACE_QUOTATION_TEMPLATE || 'space_booking_quotation',
+  ).trim();
+  const params = Array.from({length: 20}, (_, index) => whatsAppParam(bodyParams[index]));
+  const language = String(process.env.WHATSAPP_SPACE_QUOTATION_LANGUAGE || 'en').trim();
+
+  const {phoneNumberId, accessToken} = getWhatsAppCreds();
+  if (!phoneNumberId || !accessToken) {
+    console.log('[SpaceQuotation][WhatsApp stub]', {to, templateName, params});
+    return {delivered: false, stub: true, templateName, bodyParams: params};
+  }
+
+  let lastError = null;
+  for (const lang of languageCandidates(language)) {
+    try {
+      const result = await sendWhatsAppTemplateMessage({
+        to,
+        templateName,
+        languageCode: lang,
+        bodyParams: params,
+      });
+      return {...result, templateName, language: lang, bodyParams: params};
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || '');
+      if (/template|language|translation|132001/i.test(message)) continue;
+      throw error;
+    }
+  }
+  throw lastError || new Error('Could not send the quotation on WhatsApp.');
+};
+
 const getMembershipRenewalTemplateConfig = () => {
   const { phoneNumberId, accessToken, language } = getConfig();
   const templateName = (

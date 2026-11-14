@@ -88,6 +88,7 @@ const MODULE_BY_PREFIX = [
   ['/access', 'Access'],
   ['/csp', 'CSP'],
   ['/hap', 'HAP'],
+  ['/cvp', 'CVP'],
   ['/api/customer', 'Customer Authentication'],
   ['/api/announcement', 'Announcements'],
   ['/api/expences/category', 'Expense Categories'],

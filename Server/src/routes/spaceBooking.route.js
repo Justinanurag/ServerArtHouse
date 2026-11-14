@@ -16,6 +16,7 @@ import {
   rescheduleSpaceBooking,
   receiveSpaceBookingPayment,
   deleteSpaceBooking,
+  sendSpaceBookingQuotation,
 } from '../controllers/spaceBooking.controller.js';
 
 const router = express.Router();
@@ -35,6 +36,14 @@ router.get(
     PERMISSIONS.SPACE_BOOKING_UPDATE,
   ),
   getSpaceBookingAvailability,
+);
+router.post(
+  '/quotation-whatsapp',
+  requireAnyPermission(
+    PERMISSIONS.SPACE_BOOKING_CREATE,
+    PERMISSIONS.SPACE_BOOKING_UPDATE,
+  ),
+  sendSpaceBookingQuotation,
 );
 router.get(
   '/:id',

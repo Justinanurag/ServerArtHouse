@@ -26,7 +26,7 @@ const staffFromReq = req => ({
 const todayKey = () => nowInBusinessTz().dateKey;
 const keyToDate = key => new Date(`${key}T00:00:00Z`);
 
-/** Active cards become Used at zero balance and Expired after the expiry day. */
+/** A card is usable once. Zero value means it has been used. Expiry still wins after that day. */
 const resolveStatus = ({requested, balance, expiryKey}) => {
   if (requested === 'Cancelled') return 'Cancelled';
   if (balance <= 0) return 'Used';
@@ -134,12 +134,6 @@ const buildPayload = (body = {}, {partial = false} = {}) => {
     }
   }
 
-  if (body.currentBalance !== undefined && body.currentBalance !== '' && body.currentBalance !== null) {
-    const n = Number(body.currentBalance);
-    if (!Number.isFinite(n) || n < 0) errors.push('Balance must be 0 or more.');
-    else payload.currentBalance = roundMoney(n);
-  }
-
   if (!partial || body.expiryDate !== undefined) {
     const key = toDateKey(body.expiryDate);
     if (!key) errors.push('A valid expiry date is required.');
@@ -183,14 +177,7 @@ export const createGiftCard = async (req, res) => {
       });
     }
 
-    const balance = payload.currentBalance ?? payload.initialAmount;
-    if (balance > payload.initialAmount) {
-      return res.status(400).json({
-        success: false,
-        message: 'Balance cannot be greater than the amount.',
-      });
-    }
-
+    const amount = payload.initialAmount;
     const staff = staffFromReq(req);
     const autoCode = !payload.code;
 
@@ -200,12 +187,12 @@ export const createGiftCard = async (req, res) => {
         const card = await GiftCard.create({
           code,
           name: payload.name,
-          initialAmount: payload.initialAmount,
-          currentBalance: balance,
+          initialAmount: amount,
+          currentBalance: amount,
           expiryDate: keyToDate(payload.expiryKey),
           status: resolveStatus({
             requested: payload.status,
-            balance,
+            balance: amount,
             expiryKey: payload.expiryKey,
           }),
           createdByName: payload.createdByName || staff.m_staff_name || '',
@@ -214,9 +201,9 @@ export const createGiftCard = async (req, res) => {
           transactions: [
             {
               type: 'issue',
-              amount: balance,
-              balanceAfter: balance,
-              note: 'Gift card issued',
+              amount,
+              balanceAfter: amount,
+              note: 'Gift card issued for one use',
               by: staff,
             },
           ],
@@ -332,7 +319,7 @@ export const getGiftCardByCode = async (req, res) => {
     if (card.status !== 'Active') {
       reason = `This gift card is ${card.status.toLowerCase()}.`;
     } else if (card.currentBalance <= 0) {
-      reason = 'This gift card has no balance left.';
+      reason = 'This gift card has already been used.';
     }
 
     return res.status(200).json({
@@ -367,41 +354,42 @@ export const updateGiftCard = async (req, res) => {
       return res.status(400).json({success: false, message: errors[0], errors});
     }
 
-    const nextInitial = payload.initialAmount ?? card.initialAmount;
-    const nextBalance = payload.currentBalance ?? card.currentBalance;
-    if (nextBalance > nextInitial) {
+    const alreadyUsed = card.status === 'Used' || card.currentBalance <= 0;
+    if (alreadyUsed && payload.status === 'Active') {
       return res.status(400).json({
         success: false,
-        message: 'Balance cannot be greater than the amount.',
+        message: 'This gift card has already been used and cannot be used again.',
+      });
+    }
+    if (
+      alreadyUsed &&
+      payload.initialAmount != null &&
+      payload.initialAmount !== card.initialAmount
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'The amount cannot be changed after the gift card has been used.',
       });
     }
 
     const staff = staffFromReq(req);
-    const previousBalance = card.currentBalance;
     const expiryKey = payload.expiryKey ?? toDateKey(card.expiryDate);
+    const nextAmount = alreadyUsed
+      ? card.initialAmount
+      : payload.initialAmount ?? card.initialAmount;
 
     if (payload.code) card.code = payload.code;
     if (payload.name !== undefined) card.name = payload.name;
     if (payload.createdByName !== undefined) card.createdByName = payload.createdByName;
     if (payload.expiryKey) card.expiryDate = keyToDate(payload.expiryKey);
-    card.initialAmount = nextInitial;
-    card.currentBalance = nextBalance;
+    card.initialAmount = nextAmount;
+    if (!alreadyUsed) card.currentBalance = nextAmount;
     card.status = resolveStatus({
       requested: payload.status ?? card.status,
-      balance: nextBalance,
+      balance: card.currentBalance,
       expiryKey,
     });
     card.updatedBy = staff;
-
-    if (roundMoney(nextBalance - previousBalance) !== 0) {
-      card.transactions.push({
-        type: 'adjust',
-        amount: roundMoney(nextBalance - previousBalance),
-        balanceAfter: nextBalance,
-        note: String(req.body?.adjustmentNote ?? 'Balance adjusted manually').trim(),
-        by: staff,
-      });
-    }
 
     try {
       await card.save();
@@ -425,50 +413,33 @@ export const updateGiftCard = async (req, res) => {
 };
 
 /**
- * Atomically deducts `amount` from an Active, unexpired card. The balance check
- * and deduction happen in one conditional update, so concurrent checkouts can't
- * overspend a card.
+ * Uses an Active, unexpired card exactly once. The whole amount is consumed
+ * in one update, so the same code cannot be applied again.
  */
 export const redeemGiftCard = async (req, res) => {
   try {
     const code = normalizeCode(req.body?.code);
-    const amount = roundMoney(req.body?.amount);
     const reference = String(req.body?.reference ?? '').trim().slice(0, 120);
     const note = String(req.body?.note ?? '').trim().slice(0, 300);
 
     if (!code) {
       return res.status(400).json({success: false, message: 'Gift card code is required.'});
     }
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Redeem amount must be greater than 0.',
-      });
-    }
 
     const todayStart = keyToDate(todayKey());
     const staff = staffFromReq(req);
-    // Single pipeline update: balance check, deduction, status flip and audit entry
-    // commit together. User-supplied values go through $literal so a leading "$"
-    // isn't treated as a field path.
     const updated = await GiftCard.findOneAndUpdate(
       {
         code,
         status: 'Active',
         expiryDate: {$gte: todayStart},
-        currentBalance: {$gte: amount},
+        currentBalance: {$gt: 0},
       },
       [
         {
           $set: {
-            currentBalance: {
-              $max: [0, {$round: [{$subtract: ['$currentBalance', amount]}, 2]}],
-            },
-          },
-        },
-        {
-          $set: {
-            status: {$cond: [{$lte: ['$currentBalance', 0]}, 'Used', '$status']},
+            status: 'Used',
+            currentBalance: 0,
             updatedBy: {$literal: staff},
             updatedAt: '$$NOW',
             transactions: {
@@ -478,10 +449,10 @@ export const redeemGiftCard = async (req, res) => {
                   {
                     _id: new mongoose.Types.ObjectId(),
                     type: 'redeem',
-                    amount: -amount,
-                    balanceAfter: '$currentBalance',
+                    amount: {$multiply: [-1, '$currentBalance']},
+                    balanceAfter: 0,
                     reference: {$literal: reference},
-                    note: {$literal: note || 'Redeemed at checkout'},
+                    note: {$literal: note || 'Used once at checkout'},
                     by: {$literal: staff},
                     at: '$$NOW',
                   },
@@ -495,28 +466,28 @@ export const redeemGiftCard = async (req, res) => {
     );
 
     if (!updated) {
-      const card = await GiftCard.findOne({code}).select('status currentBalance expiryDate').lean();
+      const card = await GiftCard.findOne({code}).select('status expiryDate').lean();
       if (!card) {
         return res.status(404).json({success: false, message: `Gift card "${code}" not found.`});
       }
-      let message = 'This gift card cannot be redeemed.';
-      if (card.status !== 'Active') message = `This gift card is ${card.status.toLowerCase()}.`;
+      let message = 'This gift card cannot be used.';
+      if (card.status === 'Used') message = 'This gift card has already been used.';
+      else if (card.status !== 'Active') message = `This gift card is ${card.status.toLowerCase()}.`;
       else if (toDateKey(card.expiryDate) < todayKey()) message = 'This gift card has expired.';
-      else if (card.currentBalance < amount) {
-        message = `Insufficient gift card balance. Available: ₹${card.currentBalance}.`;
-      }
       return res.status(400).json({
         success: false,
         code: 'NOT_REDEEMABLE',
         message,
-        availableBalance: card.currentBalance,
       });
     }
 
+    const redeemTxn = [...(updated.transactions || [])].reverse().find(t => t.type === 'redeem');
+    const redeemedAmount = roundMoney(Math.abs(redeemTxn?.amount || 0));
+
     return res.status(200).json({
       success: true,
-      message: `₹${amount} redeemed from gift card ${code}.`,
-      redeemedAmount: amount,
+      message: `Gift card ${code} used once (₹${redeemedAmount}).`,
+      redeemedAmount,
       giftCard: serializeGiftCard(updated, {withTransactions: true}),
     });
   } catch (error) {

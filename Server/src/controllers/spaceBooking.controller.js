@@ -23,6 +23,7 @@ import {bookingPaymentError} from '../utils/bookingPayment.js';
 import {applyOfferToBookingPayload} from './spaceOffer.controller.js';
 import {quoteBookingOffer} from '../services/spaceOffer.service.js';
 import SpaceOffer from '../models/spaceOffer.model.js';
+import {sendSpaceBookingQuotationWhatsApp} from '../modules/customer/services/whatsapp.service.js';
 import {getBookingPaymentRule} from '../services/bookingPaymentSettings.service.js';
 
 const ALLOWED_STATUS = new Set([
@@ -1680,6 +1681,40 @@ export const deleteSpaceBooking = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to delete space booking.',
+    });
+  }
+};
+
+export const sendSpaceBookingQuotation = async (req, res) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    const bodyParams = Array.isArray(req.body?.bodyParams) ? req.body.bodyParams : [];
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Add the customer phone number before sending the quotation.',
+      });
+    }
+    if (bodyParams.length < 20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking details are incomplete.',
+      });
+    }
+    const result = await sendSpaceBookingQuotationWhatsApp({to: phone, bodyParams});
+    return res.status(200).json({
+      success: true,
+      delivered: Boolean(result?.delivered),
+      stub: Boolean(result?.stub),
+      message: result?.stub
+        ? 'WhatsApp is not configured on the server, so the quotation was not delivered.'
+        : 'Quotation sent on WhatsApp.',
+    });
+  } catch (error) {
+    console.error('sendSpaceBookingQuotation error:', error);
+    return res.status(502).json({
+      success: false,
+      message: error?.message || 'Could not send the quotation on WhatsApp.',
     });
   }
 };

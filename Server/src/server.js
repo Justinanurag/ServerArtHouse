@@ -33,6 +33,7 @@ import affiliateRoutes from './routes/affiliate.route.js';
 import accessRoutes from './routes/access.route.js';
 import cspRouters from './routes/csp.route.js';
 import hapRouters from './routes/hap.route.js';
+import cvpRoutes from './routes/cvp.route.js';
 import customerAuthRoutes from './modules/customer/routes/auth.routes.js';
 import {customerErrorHandler} from './modules/customer/middlewares/errorHandler.js';
 import path from 'path';
@@ -190,6 +191,7 @@ app.use('/public/invoices', publicInvoiceRoutes);
 app.use('/csp', cspRouters);
 
 app.use('/hap', hapRouters);
+app.use('/cvp', cvpRoutes);
 // Customer portal auth APIs — isolated namespace (does not conflict with admin /customer)
 app.use('/api/customer', customerAuthRoutes);
 //send whatsapp announcement
