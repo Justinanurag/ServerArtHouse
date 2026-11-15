@@ -35,6 +35,13 @@ const leadSchema = new mongoose.Schema(
       match: [/^\d{10}$/, "Phone number must be a valid 10-digit number"],
     },
 
+    email: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: "",
+    },
+
     // Status
     status: {
       type: String,
@@ -67,6 +74,7 @@ const leadSchema = new mongoose.Schema(
         "Member",
         "Events",
         "Website",
+        "Customer Portal",
         "Other",],
       default: "",
     },
@@ -92,8 +100,30 @@ const leadSchema = new mongoose.Schema(
         "Atives",
         "Woorkshop",
         "Exhibition",
+        "Space",
+        "Store",
         "Other",],
       default: "",
+    },
+
+    enquiryType: {
+      type: String,
+      enum: ["", "Space", "Store"],
+      default: "",
+    },
+
+    enquiryItem: {
+      type: String,
+      trim: true,
+      default: "",
+      maxlength: 160,
+    },
+
+    enquiryKey: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
     },
 
     deadline:{

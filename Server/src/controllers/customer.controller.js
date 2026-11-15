@@ -589,7 +589,14 @@ const getCustomers = async (req, res) => {
     // Dynamic metrics for KPI cards
     const visitedConditions = await getVisitedTodayCustomerConditions();
 
-    const [totalCustomersCount, visitedTodayCount] = await Promise.all([
+    const [
+      totalCustomersCount,
+      visitedTodayCount,
+      membersCount,
+      nonMembersCount,
+      walletAggregation,
+      dueAggregation,
+    ] = await Promise.all([
       Customer.countDocuments({ isDeleted: { $ne: true } }),
       visitedConditions.length > 0
         ? Customer.countDocuments({
@@ -597,7 +604,31 @@ const getCustomers = async (req, res) => {
             $or: visitedConditions,
           })
         : Promise.resolve(0),
+      Customer.countDocuments({
+        isDeleted: { $ne: true },
+        membershipType: { $exists: true, $nin: ['none', '', null] },
+      }),
+      Customer.countDocuments({
+        isDeleted: { $ne: true },
+        $or: [
+          { membershipType: 'none' },
+          { membershipType: '' },
+          { membershipType: null },
+          { membershipType: { $exists: false } },
+        ],
+      }),
+      Customer.aggregate([
+        { $match: { isDeleted: { $ne: true } } },
+        { $group: { _id: null, total: { $sum: '$walletAmount' } } },
+      ]),
+      Invoice.aggregate([
+        { $match: { isDeleted: { $ne: true }, paymentStatus: { $ne: 'paid' } } },
+        { $group: { _id: null, total: { $sum: '$pendingAmount' } } },
+      ]),
     ]);
+
+    const totalWalletBalance = walletAggregation[0]?.total || 0;
+    const totalDueAmount = dueAggregation[0]?.total || 0;
 
     // If filtering by Visited Today and no visits found today, return empty
     if (isVisitedToday && visitedConditions.length === 0) {
@@ -608,6 +639,10 @@ const getCustomers = async (req, res) => {
         total: 0,
         totalCustomersCount,
         visitedTodayCount: 0,
+        membersCount,
+        nonMembersCount,
+        totalWalletBalance,
+        totalDueAmount,
         limit,
         page,
         totalPages: 0,
@@ -639,6 +674,22 @@ const getCustomers = async (req, res) => {
     }
     if (Object.keys(createdRange).length) {
       andClauses.push({ createdAt: createdRange });
+    }
+
+    const membershipFilter = String(req.query.membership ?? '').trim().toLowerCase();
+    if (membershipFilter === 'member') {
+      andClauses.push({
+        membershipType: { $exists: true, $nin: ['none', '', null] },
+      });
+    } else if (membershipFilter === 'non_member') {
+      andClauses.push({
+        $or: [
+          { membershipType: 'none' },
+          { membershipType: '' },
+          { membershipType: null },
+          { membershipType: { $exists: false } },
+        ],
+      });
     }
 
     if (andClauses.length > 0) {
@@ -673,6 +724,10 @@ const getCustomers = async (req, res) => {
       total: resolvedTotal,
       totalCustomersCount,
       visitedTodayCount,
+      membersCount,
+      nonMembersCount,
+      totalWalletBalance,
+      totalDueAmount,
       limit,
       page,
       totalPages:

@@ -7,6 +7,7 @@ import {
   deleteCvpApplication,
   getCvpApplication,
   listCvpApplications,
+  reviewCvpApplication,
   updateCvpApplication,
   uploadCvpPhoto,
 } from '../controllers/cvpApplication.controller.js';
@@ -29,6 +30,7 @@ const write = requireAnyPermission(
 router.get('/', read, listCvpApplications);
 router.get('/:id', read, getCvpApplication);
 router.post('/', write, uploadCvpPhoto.single('photo'), createCvpApplication);
+router.patch('/:id/review', write, reviewCvpApplication);
 router.patch('/:id', write, uploadCvpPhoto.single('photo'), updateCvpApplication);
 router.delete('/:id', write, deleteCvpApplication);
 

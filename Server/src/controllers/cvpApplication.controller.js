@@ -50,6 +50,7 @@ const toDto = doc => {
     volunteeredBefore: Boolean(plain.volunteeredBefore),
     events: plain.events == null || plain.events === 0 ? '' : String(plain.events),
     volunteerType: plain.volunteerType || '',
+    status: ['under_review', 'approved', 'rejected'].includes(plain.status) ? plain.status : 'under_review',
     createdAt: plain.createdAt || null,
     updatedAt: plain.updatedAt || null,
   };
@@ -176,7 +177,11 @@ export const createCvpApplication = async (req, res) => {
     if (parsed.error) return res.status(400).json({success: false, message: parsed.error});
     const photoUrl = await storePhoto(req.file);
     if (!photoUrl) return res.status(400).json({success: false, message: 'Add a selfie before submitting.'});
-    const created = await CvpApplication.create({...parsed.value, photoUrl});
+    const created = await CvpApplication.create({
+      ...parsed.value,
+      photoUrl,
+      status: 'under_review',
+    });
     return res.status(201).json({
       success: true,
       message: 'Volunteer application submitted.',
@@ -185,6 +190,30 @@ export const createCvpApplication = async (req, res) => {
   } catch (error) {
     console.error('createCvpApplication error:', error);
     return res.status(500).json({success: false, message: 'Failed to submit volunteer application.'});
+  }
+};
+
+export const reviewCvpApplication = async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({success: false, message: 'Invalid application id.'});
+    }
+    const status = String(req.body?.status || '').trim();
+    if (!['under_review', 'approved', 'rejected'].includes(status)) {
+      return res.status(400).json({success: false, message: 'Choose a valid application status.'});
+    }
+    const row = await CvpApplication.findById(req.params.id);
+    if (!row) return res.status(404).json({success: false, message: 'Volunteer application not found.'});
+    row.status = status;
+    await row.save();
+    return res.status(200).json({
+      success: true,
+      message: status === 'approved' ? 'Volunteer application approved.' : 'Volunteer application updated.',
+      application: toDto(row),
+    });
+  } catch (error) {
+    console.error('reviewCvpApplication error:', error);
+    return res.status(500).json({success: false, message: 'Failed to update the application status.'});
   }
 };
 

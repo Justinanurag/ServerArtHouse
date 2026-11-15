@@ -1805,7 +1805,7 @@ const whatsAppParam = value =>
 /** Sends the approved space_booking_quotation template (20 body variables). */
 export const sendSpaceBookingQuotationWhatsApp = async ({to, bodyParams = []}) => {
   const templateName = String(
-    process.env.WHATSAPP_SPACE_QUOTATION_TEMPLATE || 'space_booking_quotation',
+    process.env.WHATSAPP_SPACE_QUOTATION_TEMPLATE || 'space_quotation_template',
   ).trim();
   const params = Array.from({length: 20}, (_, index) => whatsAppParam(bodyParams[index]));
   const language = String(process.env.WHATSAPP_SPACE_QUOTATION_LANGUAGE || 'en').trim();
@@ -1834,6 +1834,40 @@ export const sendSpaceBookingQuotationWhatsApp = async ({to, bodyParams = []}) =
     }
   }
   throw lastError || new Error('Could not send the quotation on WhatsApp.');
+};
+
+/** Sends booking_confirm_template after a space booking is confirmed (17 body variables). */
+export const sendBookingConfirmWhatsApp = async ({to, bodyParams = []}) => {
+  const templateName = String(
+    process.env.WHATSAPP_BOOKING_CONFIRM_TEMPLATE || 'booking_confirm_template',
+  ).trim();
+  const params = Array.from({length: 17}, (_, index) => whatsAppParam(bodyParams[index]));
+  const language = String(process.env.WHATSAPP_BOOKING_CONFIRM_LANGUAGE || 'en').trim();
+
+  const {phoneNumberId, accessToken} = getWhatsAppCreds();
+  if (!phoneNumberId || !accessToken) {
+    console.log('[BookingConfirm][WhatsApp stub]', {to, templateName, params});
+    return {delivered: false, stub: true, templateName, bodyParams: params};
+  }
+
+  let lastError = null;
+  for (const lang of languageCandidates(language)) {
+    try {
+      const result = await sendWhatsAppTemplateMessage({
+        to,
+        templateName,
+        languageCode: lang,
+        bodyParams: params,
+      });
+      return {...result, templateName, language: lang, bodyParams: params};
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || '');
+      if (/template|language|translation|132001/i.test(message)) continue;
+      throw error;
+    }
+  }
+  throw lastError || new Error('Could not send the booking confirmation on WhatsApp.');
 };
 
 const getMembershipRenewalTemplateConfig = () => {

@@ -17,6 +17,7 @@ import {
   receiveSpaceBookingPayment,
   deleteSpaceBooking,
   sendSpaceBookingQuotation,
+  sendSpaceBookingConfirmation,
 } from '../controllers/spaceBooking.controller.js';
 
 const router = express.Router();
@@ -36,6 +37,14 @@ router.get(
     PERMISSIONS.SPACE_BOOKING_UPDATE,
   ),
   getSpaceBookingAvailability,
+);
+router.post(
+  '/booking-confirm-whatsapp',
+  requireAnyPermission(
+    PERMISSIONS.SPACE_BOOKING_CREATE,
+    PERMISSIONS.SPACE_BOOKING_UPDATE,
+  ),
+  sendSpaceBookingConfirmation,
 );
 router.post(
   '/quotation-whatsapp',

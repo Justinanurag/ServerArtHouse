@@ -23,6 +23,11 @@ const cvpApplicationSchema = new mongoose.Schema(
       enum: ['Paid', 'Unpaid', 'Both', ''],
       default: '',
     },
+    status: {
+      type: String,
+      enum: ['under_review', 'approved', 'rejected'],
+      default: 'under_review',
+    },
   },
   {timestamps: true},
 );

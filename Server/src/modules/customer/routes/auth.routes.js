@@ -33,6 +33,7 @@ import {
   getCustomerProducts,
   upload,
 } from '../../../controllers/product.controller.js';
+import {capturePortalEnquiry} from '../../../controllers/lead.controller.js';
 import {
   getMyActivity,
   getMyActivityDetail,
@@ -48,6 +49,10 @@ import {
   getMyHapApplication,
   updateMyHapApplication,
 } from '../../../controllers/hapApplication.controller.js';
+import {
+  createCvpApplication,
+  uploadCvpPhoto,
+} from '../../../controllers/cvpApplication.controller.js';
 import {
   createMyCspProduct,
   deleteMyCspProduct,
@@ -150,6 +155,19 @@ router.post(
   authenticateCustomer,
   authorizeCustomer('active'),
   applyHap,
+);
+router.post(
+  '/enquiries',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  capturePortalEnquiry,
+);
+router.post(
+  '/cvp/apply',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  uploadCvpPhoto.single('photo'),
+  createCvpApplication,
 );
 router.patch(
   '/hap/application',

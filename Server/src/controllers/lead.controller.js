@@ -344,6 +344,9 @@ export const getLead = async (req, res) => {
         { leadId: rx },
         { name: rx },
         { phone: rx },
+        { email: rx },
+        { enquiryItem: rx },
+        { reasonNote: rx },
       ];
     }
 
@@ -640,6 +643,105 @@ export const updateLead = async (req, res) => {
   }
 };
 //Post
+
+const lastTenDigits = (value) => String(value || "").replace(/\D/g, "").slice(-10);
+
+export const capturePortalEnquiry = async (req, res) => {
+  try {
+    const customer = req.customer || {};
+    const phone = lastTenDigits(customer.mobile);
+    if (!/^\d{10}$/.test(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: "A verified mobile number is required to record this enquiry.",
+      });
+    }
+
+    const enquiryType = req.body?.enquiryType === "Store" ? "Store" : req.body?.enquiryType === "Space" ? "Space" : "";
+    const itemName = String(req.body?.itemName || "").trim().slice(0, 160);
+    const description = String(req.body?.description || "").trim().slice(0, 1000);
+    const enquiryKey = String(req.body?.enquiryKey || "").trim().slice(0, 80);
+
+    if (!enquiryType || !itemName || !enquiryKey) {
+      return res.status(400).json({
+        success: false,
+        message: "Enquiry type, item, and submission id are required.",
+      });
+    }
+
+    const existing = await Lead.findOne({ enquiryKey }).lean();
+    if (existing) {
+      return res.status(200).json({
+        success: true,
+        duplicate: true,
+        message: "This enquiry is already recorded.",
+        data: { _id: existing._id, leadId: existing.leadId },
+      });
+    }
+
+    const name = String(customer.name || "").trim() || "Customer";
+    const email = String(customer.email || "").trim().toLowerCase();
+    const reasonNote = [`${enquiryType} enquiry: ${itemName}`, description].filter(Boolean).join("\n");
+    const { leadId, leadNumber, leadPrefix } = await generateUniqueLeadId();
+    const now = new Date();
+
+    let lead;
+    try {
+      lead = await Lead.create({
+        leadId,
+        leadNumber,
+        leadPrefix,
+        name,
+        phone,
+        email,
+        status: "New",
+        source: "Customer Portal",
+        purpose: enquiryType,
+        enquiryType,
+        enquiryItem: itemName,
+        enquiryKey,
+        reasonNote,
+        date: now,
+        createdBy: { m_staff_name: "Customer Portal" },
+        timeline: [
+          {
+            type: "created",
+            title: "Lead Created",
+            status: "New",
+            note: `Lead from Customer Portal · ${enquiryType}: ${itemName}`,
+            at: now,
+            by: { m_staff_name: "Customer Portal" },
+          },
+        ],
+      });
+    } catch (error) {
+      if (error?.code === 11000 && enquiryKey) {
+        const raced = await Lead.findOne({ enquiryKey }).lean();
+        if (raced) {
+          return res.status(200).json({
+            success: true,
+            duplicate: true,
+            message: "This enquiry is already recorded.",
+            data: { _id: raced._id, leadId: raced.leadId },
+          });
+        }
+      }
+      throw error;
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Enquiry captured.",
+      data: { _id: lead._id, leadId: lead.leadId },
+    });
+  } catch (error) {
+    console.error("Capture portal enquiry error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Could not record the enquiry.",
+    });
+  }
+};
 
 export const createLead = async (req, res) => {
   try {
