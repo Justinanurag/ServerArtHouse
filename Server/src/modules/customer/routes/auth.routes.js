@@ -29,6 +29,17 @@ import {
 } from '../../../controllers/space.controller.js';
 import {getCustomerSpaceAvailability} from '../../../controllers/spaceBooking.controller.js';
 import {
+  quoteSpaceCheckout,
+  startSpaceCheckout,
+  verifySpaceCheckout,
+} from '../controllers/spaceCheckout.controller.js';
+import {
+  myCoworkingBookings,
+  quoteCoworking,
+  startCoworking,
+  verifyCoworking,
+} from '../controllers/coworkingCheckout.controller.js';
+import {
   getCustomerProductById,
   getCustomerProducts,
   upload,
@@ -259,6 +270,48 @@ router.post(
 );
 
 // ── Razorpay payment routes ───────────────────────────────────────────────────
+router.post(
+  '/coworking-bookings/quote',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  quoteCoworking,
+);
+router.post(
+  '/coworking-bookings/checkout',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  startCoworking,
+);
+router.post(
+  '/coworking-bookings/checkout/verify',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  verifyCoworking,
+);
+router.get(
+  '/coworking-bookings',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  myCoworkingBookings,
+);
+router.post(
+  '/space-bookings/quote',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  quoteSpaceCheckout,
+);
+router.post(
+  '/space-bookings/checkout',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  startSpaceCheckout,
+);
+router.post(
+  '/space-bookings/checkout/verify',
+  authenticateCustomer,
+  authorizeCustomer('active'),
+  verifySpaceCheckout,
+);
 router.post(
   '/payments/razorpay/initiate',
   authenticateCustomer,

@@ -108,7 +108,7 @@ const leadSchema = new mongoose.Schema(
 
     enquiryType: {
       type: String,
-      enum: ["", "Space", "Store"],
+      enum: ["", "Space", "Store", "Service"],
       default: "",
     },
 

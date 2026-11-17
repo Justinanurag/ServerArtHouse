@@ -198,6 +198,22 @@ const spaceBookingSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    razorpayOrderId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    razorpayPaymentId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    couponCode: {
+      type: String,
+      default: '',
+      trim: true,
+      uppercase: true,
+    },
     /** Amount before the first reschedule. Later bills compare against grandTotal. */
     originalAmount: {
       type: Number,

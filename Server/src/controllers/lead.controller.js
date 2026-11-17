@@ -657,7 +657,7 @@ export const capturePortalEnquiry = async (req, res) => {
       });
     }
 
-    const enquiryType = req.body?.enquiryType === "Store" ? "Store" : req.body?.enquiryType === "Space" ? "Space" : "";
+    const enquiryType = ["Store", "Space", "Service"].includes(req.body?.enquiryType) ? req.body.enquiryType : "";
     const itemName = String(req.body?.itemName || "").trim().slice(0, 160);
     const description = String(req.body?.description || "").trim().slice(0, 1000);
     const enquiryKey = String(req.body?.enquiryKey || "").trim().slice(0, 80);

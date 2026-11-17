@@ -14,19 +14,22 @@ const hapApplicationSchema = new mongoose.Schema(
       trim: true,
     },
     networkSize: {
-      type: Number,
+      type: mongoose.Schema.Types.Mixed,
       required: true,
-      min: 1,
     },
     payoutDetail: {
       type: String,
-      required: true,
+      default: '',
       trim: true,
     },
     presence: {
       type: String,
       required: true,
       trim: true,
+    },
+    promotionChannels: {
+      type: [String],
+      default: [],
     },
     status: {
       type: String,

@@ -191,11 +191,8 @@ const serialize = (doc, customer) => {
     subTotal: Number(plain.subTotal) || 0,
     grandTotal: Number(plain.grandTotal) || 0,
     paidAmount: (() => {
-      const total = Number(plain.grandTotal) || 0;
       const paid = Number(plain.paidAmount) || 0;
-      const due = Number(plain.dueAmount) || 0;
-      const remaining = due > 0 ? due : Math.max(0, total - paid);
-      return remaining < 1 && (paid > 0 || remaining === 0) ? total || paid : paid;
+      return roundMoney(paid);
     })(),
     dueAmount: (() => {
       const total = Number(plain.grandTotal) || 0;
@@ -338,6 +335,16 @@ const buildRecord = async body => {
       ? status
       : computeBookingStatus(toDateKey(bookingDate), startTime, endTime, status);
 
+  const clientFinal = roundMoney(
+    Math.max(0, Number(body.finalAmount) || Number(body.grandTotal) || 0),
+  );
+  const clientSubTotal = roundMoney(Math.max(0, Number(body.subTotal) || 0));
+  const hasClientDiscount = body.membershipDiscount !== undefined && body.membershipDiscount !== null && body.membershipDiscount !== '';
+  const clientDiscount = roundMoney(Math.max(0, Number(body.membershipDiscount) || 0));
+  const hasClientCashback = body.cashbackTotal !== undefined && body.cashbackTotal !== null && body.cashbackTotal !== '';
+  const clientCashback = roundMoney(Math.max(0, Number(body.cashbackTotal) || 0));
+  const billTotal = clientFinal > 0 ? clientFinal : grandTotal;
+
   const confirmingPayment =
     Boolean(paymentStatus) && resolvedStatus !== 'Draft' && resolvedStatus !== 'Cancelled';
   let paidAmount;
@@ -345,19 +352,18 @@ const buildRecord = async body => {
   if (confirmingPayment) {
     const tendered = Math.max(0, Number(body.paidAmount) || 0);
     const clientDue = roundMoney(Math.max(0, Number(body.dueAmount) || 0));
-    const clientFinal = roundMoney(Math.max(0, Number(body.finalAmount) || 0));
     const rule = await getBookingPaymentRule();
-    const coversServerTotal = tendered + 1 >= grandTotal;
+    const coversBill = tendered + 1 >= billTotal;
     const paidCheckoutInFull =
       clientDue <= 1 && tendered > 0 && (clientFinal <= 0 || tendered + 1 >= clientFinal);
-    // Full is the maximum. A checkout that already collected its whole bill
-    // is not rejected by the partial minimum.
-    if (paymentStatus === 'full' && (coversServerTotal || paidCheckoutInFull)) {
-      paidAmount = grandTotal;
+    // The amount collected at checkout is the paid price. Do not replace it
+    // with a catalogue recalculation.
+    if (paymentStatus === 'full' && (coversBill || paidCheckoutInFull)) {
+      paidAmount = billTotal;
       dueAmount = 0;
     } else {
       const paymentError = bookingPaymentError({
-        total: grandTotal,
+        total: billTotal,
         paid: tendered,
         paymentStatus,
         rule,
@@ -366,10 +372,10 @@ const buildRecord = async body => {
         errors.push(paymentError);
         return {errors};
       }
-      paidAmount = appliedBookingPayment(grandTotal, tendered);
-      const gap = roundMoney(Math.max(0, grandTotal - paidAmount));
+      paidAmount = appliedBookingPayment(billTotal, tendered);
+      const gap = roundMoney(Math.max(0, billTotal - paidAmount));
       dueAmount = paymentStatus === 'full' && gap <= 1 ? 0 : gap;
-      if (dueAmount === 0) paidAmount = grandTotal;
+      if (dueAmount === 0) paidAmount = billTotal;
     }
   }
 
@@ -395,10 +401,10 @@ const buildRecord = async body => {
       services,
       foods,
       membershipType: plan ? customer.membershipType || plan.planId || '' : '',
-      membershipDiscount,
-      cashbackTotal,
-      subTotal,
-      grandTotal,
+      membershipDiscount: hasClientDiscount ? clientDiscount : membershipDiscount,
+      cashbackTotal: hasClientCashback ? clientCashback : cashbackTotal,
+      subTotal: clientSubTotal > 0 ? clientSubTotal : subTotal,
+      grandTotal: billTotal,
       status: resolvedStatus,
       notes: String(body.notes || '').trim().slice(0, 200),
       ...(paymentStatus ? {paymentStatus} : {}),

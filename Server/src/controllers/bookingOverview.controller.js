@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import SpaceBooking from '../models/spaceBooking.model.js';
 import AllBooking from '../models/allBooking.model.js';
+import Space from '../models/space.model.js';
 import Invoice from '../models/invoice.model.js';
 import Customer from '../models/customer.model.js';
 import Wallet from '../models/wallet.model.js';
@@ -107,6 +108,9 @@ const mapBooking = (doc, source) => {
     startTime: doc.startTime || '',
     endTime: doc.endTime || '',
     duration: durationLabel(doc),
+    durationHours: bookingHours(doc.startTime, doc.endTime, doc.durationHours),
+    spaceType: doc.spaceCategory || doc.spaceType || 'Space',
+    category: total > 0 ? 'Paid' : 'Free',
     grandTotal: total,
     paidAmount: paid,
     dueAmount: due,
@@ -137,6 +141,161 @@ const inDateRange = (value, from, to) => {
   if (from && value < from) return false;
   if (to && value > to) return false;
   return true;
+};
+
+const DAY_OPEN = 6 * 60;
+const DAY_CLOSE = 24 * 60;
+const DAY_HOURS = 18;
+
+const clockMinutes = value => {
+  const raw = String(value || '').trim();
+  if (raw === '24:00') return 24 * 60;
+  const match = raw.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const minutes = Number(match[1]) * 60 + Number(match[2]);
+  return Number.isFinite(minutes) ? minutes : null;
+};
+
+const bookingHours = (startTime, endTime, storedHours) => {
+  const start = clockMinutes(startTime);
+  const end = clockMinutes(endTime);
+  if (start != null && end != null && end > start) {
+    const from = Math.max(DAY_OPEN, start);
+    const to = Math.min(DAY_CLOSE, end);
+    if (to > from) return Math.round(((to - from) / 60) * 100) / 100;
+    return 0;
+  }
+  const hours = Number(storedHours) || 0;
+  return hours > 0 ? Math.round(Math.min(hours, DAY_HOURS) * 100) / 100 : 0;
+};
+
+const clipInterval = (startTime, endTime) => {
+  const start = clockMinutes(startTime);
+  const end = clockMinutes(endTime);
+  if (start == null || end == null || end <= start) return null;
+  const from = Math.max(DAY_OPEN, start);
+  const to = Math.min(DAY_CLOSE, end);
+  return to > from ? {start: from, end: to} : null;
+};
+
+const mergedHours = intervals => {
+  const sorted = intervals.slice().sort((a, b) => a.start - b.start);
+  let total = 0;
+  let open = null;
+  for (const interval of sorted) {
+    if (!open || interval.start > open.end) {
+      if (open) total += open.end - open.start;
+      open = {...interval};
+    } else {
+      open.end = Math.max(open.end, interval.end);
+    }
+  }
+  if (open) total += open.end - open.start;
+  return Math.round((total / 60) * 100) / 100;
+};
+
+const eachDate = (from, to) => {
+  if (!from || !to || to < from) return [];
+  const [year, month, day] = from.split('-').map(Number);
+  const cursor = new Date(year, month - 1, day);
+  const [endYear, endMonth, endDay] = to.split('-').map(Number);
+  const end = new Date(endYear, endMonth - 1, endDay);
+  const dates = [];
+  for (let guard = 0; guard < 400 && cursor <= end; guard += 1) {
+    dates.push(dateKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
+};
+
+const buildUtilization = async (rows, from, to) => {
+  const active = rows.filter(
+    row => row.bookingStatus !== 'Cancelled' && row.bookingStatus !== 'Draft',
+  );
+  const dated = active.map(row => row.bookingDate).filter(Boolean).sort();
+  const rangeFrom = from || dated[0] || '';
+  const rangeTo = to || dated[dated.length - 1] || rangeFrom;
+  const dates = eachDate(rangeFrom, rangeTo);
+  const spaces = await Space.find({status: {$ne: 'Maintenance'}}).select('name').lean();
+  const catalogue = new Set(spaces.map(space => String(space.name || '').trim()).filter(Boolean));
+  const spaceCount = Math.max(1, catalogue.size || new Set(active.map(row => row.spaceName).filter(Boolean)).size || 1);
+  const availableHours = dates.length * DAY_HOURS * spaceCount;
+  const bySpaceDay = new Map();
+  for (const row of active) {
+    const interval = clipInterval(row.startTime, row.endTime);
+    if (!interval || !row.bookingDate) continue;
+    const key = `${row.spaceName || row.id}|${row.bookingDate}`;
+    const list = bySpaceDay.get(key) || [];
+    list.push(interval);
+    bySpaceDay.set(key, list);
+  }
+  let utilizedHours = 0;
+  for (const intervals of bySpaceDay.values()) utilizedHours += mergedHours(intervals);
+  utilizedHours = Math.round(utilizedHours * 100) / 100;
+  const paid = active.filter(row => row.category === 'Paid');
+  const free = active.filter(row => row.category !== 'Paid');
+  const sumHours = list => Math.round(list.reduce((sum, row) => sum + (Number(row.durationHours) || 0), 0) * 100) / 100;
+  const paidHours = sumHours(paid);
+  const freeHours = sumHours(free);
+  const bookedHours = Math.round((paidHours + freeHours) * 100) / 100;
+  const days = dates.map(date => {
+    const dayRows = active.filter(row => row.bookingDate === date);
+    return {
+      date,
+      paidHours: sumHours(dayRows.filter(row => row.category === 'Paid')),
+      freeHours: sumHours(dayRows.filter(row => row.category !== 'Paid')),
+      availableHours: DAY_HOURS * spaceCount,
+      bookings: dayRows.length,
+    };
+  });
+  const typeMap = new Map();
+  for (const row of active) {
+    const key = row.spaceType || 'Space';
+    const current = typeMap.get(key) || {spaceType: key, bookings: 0, hours: 0, paidHours: 0, freeHours: 0};
+    const hours = Number(row.durationHours) || 0;
+    current.bookings += 1;
+    current.hours = Math.round((current.hours + hours) * 100) / 100;
+    if (row.category === 'Paid') current.paidHours = Math.round((current.paidHours + hours) * 100) / 100;
+    else current.freeHours = Math.round((current.freeHours + hours) * 100) / 100;
+    typeMap.set(key, current);
+  }
+  const spaceTypes = [...typeMap.values()]
+    .map(item => ({
+      ...item,
+      share: bookedHours > 0 ? Math.round((item.hours / bookedHours) * 1000) / 10 : 0,
+    }))
+    .sort((a, b) => b.hours - a.hours);
+  return {
+    from: rangeFrom,
+    to: rangeTo,
+    dayHours: DAY_HOURS,
+    days: dates.length,
+    spaceCount,
+    availableHours,
+    bookedHours,
+    utilizedHours,
+    utilization: availableHours > 0 ? Math.round((utilizedHours / availableHours) * 1000) / 10 : 0,
+    paidHours,
+    paidBookings: paid.length,
+    freeHours,
+    freeBookings: free.length,
+    daysSeries: days,
+    spaceTypes,
+    rows: active.map(row => ({
+      id: row.id,
+      bookingCode: row.bookingCode,
+      customerName: row.customerName,
+      spaceName: row.spaceName,
+      spaceType: row.spaceType,
+      bookingDate: row.bookingDate,
+      startTime: row.startTime,
+      endTime: row.endTime,
+      durationHours: row.durationHours,
+      category: row.category,
+      paymentStatus: row.paymentStatus,
+      grandTotal: row.grandTotal,
+    })),
+  };
 };
 
 const buildKpis = rows => {
@@ -228,6 +387,13 @@ export const getBookingOverview = async (req, res) => {
       ...fulls.map(doc => mapBooking(doc, 'full')),
     ];
     const kpis = buildKpis(all);
+    const rangeFrom = String(req.query.from || '').trim();
+    const rangeTo = String(req.query.to || '').trim();
+    const utilization = await buildUtilization(
+      all.filter(row => inDateRange(row.bookingDate, rangeFrom, rangeTo)),
+      rangeFrom,
+      rangeTo,
+    );
 
     const search = String(req.query.search || '').trim().toLowerCase();
     const bookingStatus = String(req.query.bookingStatus || '').trim();
@@ -272,6 +438,7 @@ export const getBookingOverview = async (req, res) => {
     return res.status(200).json({
       success: true,
       kpis,
+      utilization,
       bookings: filtered.slice(start, start + limit),
       pagination: {
         page,

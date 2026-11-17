@@ -30,9 +30,10 @@ const toDto = doc => {
     email: String(customer?.email || '').trim(),
     mobile: String(customer?.mobile || '').trim(),
     profession: plain.profession || '',
-    networkSize: Number(plain.networkSize) || 0,
+    networkSize: plain.networkSize ? String(plain.networkSize) : '',
     payoutDetail: plain.payoutDetail || '',
     presence: plain.presence || '',
+    promotionChannels: Array.isArray(plain.promotionChannels) ? plain.promotionChannels : [],
     status: plain.status || 'under_review',
     rejectionReason: plain.rejectionReason || '',
     reviewedAt: plain.reviewedAt || null,
@@ -43,29 +44,37 @@ const toDto = doc => {
 
 const readFields = body => {
   const profession = String(body?.profession || '').trim();
-  const networkSize = Number(body?.networkSize);
+  const networkSizeRaw = body?.networkSize;
+  const networkSize =
+    typeof networkSizeRaw === 'string'
+      ? networkSizeRaw.trim()
+      : typeof networkSizeRaw === 'number' && Number.isFinite(networkSizeRaw)
+      ? String(networkSizeRaw)
+      : '';
   const payoutDetail = String(
     body?.payoutDetail || body?.upiOrAccount || '',
   ).trim();
   const presence = String(
-    body?.presence || body?.websiteOrSocial || '',
+    body?.presence || body?.websiteOrSocial || body?.portfolio || '',
   ).trim();
+  const promotionChannels = Array.isArray(body?.promotionChannels)
+    ? body.promotionChannels.map(s => String(s).trim()).filter(Boolean)
+    : typeof body?.promotionChannels === 'string' && body.promotionChannels.trim()
+    ? [body.promotionChannels.trim()]
+    : [];
 
   if (!HAP_PROFESSIONS.includes(profession)) {
     return {error: 'Select a profession.'};
   }
-  if (!Number.isInteger(networkSize) || networkSize < 1 || networkSize > 10000000) {
-    return {error: 'Network size must be a whole number of at least 1.'};
+  if (!networkSize) {
+    return {error: 'Select your network size range.'};
   }
-  if (payoutDetail.length < 4 || payoutDetail.length > 100) {
-    return {error: 'Enter a UPI ID or account number.'};
-  }
-  if (presence.length < 3 || presence.length > 200) {
-    return {error: 'Enter a website or social media profile.'};
+  if (presence.length < 3 || presence.length > 300) {
+    return {error: 'Enter your portfolio, website, or profile URL.'};
   }
 
   return {
-    value: {profession, networkSize, payoutDetail, presence},
+    value: {profession, networkSize, payoutDetail, presence, promotionChannels},
   };
 };
 
