@@ -87,7 +87,26 @@ const displayPaymentStatus = doc => {
   return 'Unpaid';
 };
 
-const mapBooking = (doc, source) => {
+const bookedSpaceType = (doc, catalogue) => {
+  const nameKey = String(doc.spaceName || '').trim().toLowerCase();
+  const linked = catalogue?.byId?.get(String(doc.spaceId || ''));
+  const named = catalogue?.byName?.get(nameKey) || [];
+  const rows = named.length ? named : linked ? [linked] : [];
+  const categories = rows
+    .map(row => String(row.category || '').trim())
+    .filter(Boolean);
+  const specific = categories.find(category => category.toLowerCase() !== 'studio');
+  const fromSpace = specific || categories[0] || '';
+  const saved = String(doc.spaceCategory || '').trim();
+  const kind = String(doc.spaceType || '').trim();
+  const generic = value => !value || ['exclusive', 'coworking', 'space'].includes(value.toLowerCase());
+  if (!generic(fromSpace)) return fromSpace;
+  if (!generic(saved) && saved.toLowerCase() !== 'studio') return saved;
+  if (!generic(kind)) return kind;
+  return fromSpace || saved || 'Space';
+};
+
+const mapBooking = (doc, source, catalogue) => {
   const id = String(doc._id);
   const paid = roundMoney(doc.paidAmount);
   const total = roundMoney(doc.grandTotal);
@@ -109,7 +128,7 @@ const mapBooking = (doc, source) => {
     endTime: doc.endTime || '',
     duration: durationLabel(doc),
     durationHours: bookingHours(doc.startTime, doc.endTime, doc.durationHours),
-    spaceType: doc.spaceCategory || doc.spaceType || 'Space',
+    spaceType: bookedSpaceType(doc, catalogue),
     category: total > 0 ? 'Paid' : 'Free',
     grandTotal: total,
     paidAmount: paid,
@@ -219,7 +238,8 @@ const buildUtilization = async (rows, from, to) => {
   const spaces = await Space.find({status: {$ne: 'Maintenance'}}).select('name').lean();
   const catalogue = new Set(spaces.map(space => String(space.name || '').trim()).filter(Boolean));
   const spaceCount = Math.max(1, catalogue.size || new Set(active.map(row => row.spaceName).filter(Boolean)).size || 1);
-  const availableHours = dates.length * DAY_HOURS * spaceCount;
+  // One operating day is 18 hours. A week is 18 × 7, a month is 18 × the days in that range.
+  const availableHours = dates.length * DAY_HOURS;
   const bySpaceDay = new Map();
   for (const row of active) {
     const interval = clipInterval(row.startTime, row.endTime);
@@ -244,17 +264,18 @@ const buildUtilization = async (rows, from, to) => {
       date,
       paidHours: sumHours(dayRows.filter(row => row.category === 'Paid')),
       freeHours: sumHours(dayRows.filter(row => row.category !== 'Paid')),
-      availableHours: DAY_HOURS * spaceCount,
+      availableHours: DAY_HOURS,
       bookings: dayRows.length,
     };
   });
   const typeMap = new Map();
   for (const row of active) {
     const key = row.spaceType || 'Space';
-    const current = typeMap.get(key) || {spaceType: key, bookings: 0, hours: 0, paidHours: 0, freeHours: 0};
+    const current = typeMap.get(key) || {spaceType: key, bookings: 0, hours: 0, paidHours: 0, freeHours: 0, spaces: []};
     const hours = Number(row.durationHours) || 0;
     current.bookings += 1;
     current.hours = Math.round((current.hours + hours) * 100) / 100;
+    if (row.spaceName && !current.spaces.includes(row.spaceName)) current.spaces.push(row.spaceName);
     if (row.category === 'Paid') current.paidHours = Math.round((current.paidHours + hours) * 100) / 100;
     else current.freeHours = Math.round((current.freeHours + hours) * 100) / 100;
     typeMap.set(key, current);
@@ -274,7 +295,7 @@ const buildUtilization = async (rows, from, to) => {
     availableHours,
     bookedHours,
     utilizedHours,
-    utilization: availableHours > 0 ? Math.round((utilizedHours / availableHours) * 1000) / 10 : 0,
+    utilization: availableHours > 0 ? Math.round((bookedHours / availableHours) * 1000) / 10 : 0,
     paidHours,
     paidBookings: paid.length,
     freeHours,
@@ -377,14 +398,25 @@ const applyInvoiceTotals = async bookings => {
 
 export const getBookingOverview = async (req, res) => {
   try {
-    const [spaces, fulls] = await Promise.all([
+    const [spaceBookings, fulls, catalogueRows] = await Promise.all([
       SpaceBooking.find().lean(),
       AllBooking.find().lean(),
+      Space.find().select('name category spaceType').lean(),
     ]);
-    await applyInvoiceTotals(spaces);
+    await applyInvoiceTotals(spaceBookings);
+    const byId = new Map(catalogueRows.map(row => [String(row._id), row]));
+    const byName = new Map();
+    for (const row of catalogueRows) {
+      const key = String(row.name || '').trim().toLowerCase();
+      if (!key) continue;
+      const list = byName.get(key) || [];
+      list.push(row);
+      byName.set(key, list);
+    }
+    const catalogue = {byId, byName};
     const all = [
-      ...spaces.map(doc => mapBooking(doc, 'space')),
-      ...fulls.map(doc => mapBooking(doc, 'full')),
+      ...spaceBookings.map(doc => mapBooking(doc, 'space', catalogue)),
+      ...fulls.map(doc => mapBooking(doc, 'full', catalogue)),
     ];
     const kpis = buildKpis(all);
     const rangeFrom = String(req.query.from || '').trim();
